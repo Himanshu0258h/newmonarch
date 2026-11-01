@@ -19,6 +19,9 @@ type BalanceHeaderProps = {
   cards: WalletCard[];
   isLoading: boolean;
   onOpenWallet: (cardId?: string) => void;
+  onCardStackExpandedChange?: (expanded: boolean) => void;
+  collapseCardStackRequest?: number;
+  onCollapseCardStack?: () => void;
 };
 
 function AnimatedPressable({
@@ -61,19 +64,64 @@ export default function BalanceHeader({
   cards,
   isLoading,
   onOpenWallet,
+  onCardStackExpandedChange,
+  collapseCardStackRequest,
+  onCollapseCardStack,
 }: BalanceHeaderProps) {
+  const headerHeight = React.useRef(new Animated.Value(0)).current;
+  const baseHeaderHeight = React.useRef(0);
+  const additionalHeaderHeight = React.useRef(0);
+  const [headerMeasured, setHeaderMeasured] = React.useState(false);
+  const [cardStackExpanded, setCardStackExpanded] = React.useState(false);
+  const handleExpandedChange = React.useCallback((expanded: boolean) => {
+    setCardStackExpanded(expanded);
+    onCardStackExpandedChange?.(expanded);
+  }, [onCardStackExpandedChange]);
+  const handleExpansionHeightChange = React.useCallback((height: number, reduceMotion: boolean) => {
+    additionalHeaderHeight.current = height;
+    if (!baseHeaderHeight.current) return;
+    const nextHeight = baseHeaderHeight.current + height;
+    if (reduceMotion) {
+      headerHeight.setValue(nextHeight);
+      return;
+    }
+    Animated.spring(headerHeight, {
+      toValue: nextHeight,
+      useNativeDriver: false,
+      damping: 18,
+      stiffness: 160,
+      mass: 1,
+    }).start();
+  }, [headerHeight]);
+
+  const handleHeaderLayout = React.useCallback((event: { nativeEvent: { layout: { height: number } } }) => {
+    if (baseHeaderHeight.current) return;
+    baseHeaderHeight.current = event.nativeEvent.layout.height;
+    headerHeight.setValue(baseHeaderHeight.current + additionalHeaderHeight.current);
+    setHeaderMeasured(true);
+  }, [headerHeight]);
+
   const frontCard = getTopCards(cards, 3)[0];
+  const totalMonthlySpend = cards.reduce((total, card) => {
+    const monthlySpend = Number(card.monthlySpend);
+    return total + (Number.isFinite(monthlySpend) ? monthlySpend : 0);
+  }, 0);
   const balance = frontCard
-    ? formatWalletCurrency(frontCard.balance, frontCard.currency ?? 'INR')
+    ? formatWalletCurrency(totalMonthlySpend, frontCard.currency ?? 'INR')
     : '';
   const decimalIndex = balance.lastIndexOf('.');
   const wholeBalance = decimalIndex >= 0 ? balance.slice(0, decimalIndex) : balance;
   const cents = decimalIndex >= 0 ? balance.slice(decimalIndex) : '';
-  const balanceLabel =
-    frontCard?.displayName?.trim() || frontCard?.holder?.trim() || frontCard?.bank?.trim() || 'Total';
+  const balanceLabel = 'Total Monthly Spend';
 
   return (
-    <View style={styles.headerContainer}>
+    <Animated.View
+      onLayout={handleHeaderLayout}
+      style={[
+        styles.headerContainer,
+        headerMeasured ? { height: headerHeight, maxHeight: 10000 } : null,
+      ]}
+    >
       <LinearGradient
         colors={['#7A0A00', '#E8420F', '#F5873F']}
         start={{ x: 0.5, y: 0 }}
@@ -95,38 +143,47 @@ export default function BalanceHeader({
           </View>
         </View>
 
-        {frontCard ? (
-          <>
-            <Text style={styles.balanceLabel} numberOfLines={1}>
-              {balanceLabel}
-            </Text>
-            <Text style={styles.balanceText} numberOfLines={1} adjustsFontSizeToFit>
-              <Text style={styles.balanceMain}>{wholeBalance}</Text>
-              <Text style={styles.balanceCents}>{cents}</Text>
-            </Text>
-          </>
-        ) : (
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => onOpenWallet()}
-            style={styles.noBalance}
-          >
-            <Text style={styles.balanceLabel}>Add your first card</Text>
-          </Pressable>
-        )}
+        <Pressable
+          disabled={!cardStackExpanded}
+          onPress={onCollapseCardStack}
+          style={styles.balanceTapArea}
+        >
+          {frontCard ? (
+            <>
+              <Text style={styles.balanceLabel} numberOfLines={1}>
+                {balanceLabel}
+              </Text>
+              <Text style={styles.balanceText} numberOfLines={1} adjustsFontSizeToFit>
+                <Text style={styles.balanceMain}>{wholeBalance}</Text>
+                <Text style={styles.balanceCents}>{cents}</Text>
+              </Text>
+            </>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => onOpenWallet()}
+              style={styles.noBalance}
+            >
+              <Text style={styles.balanceLabel}>Add your first card</Text>
+            </Pressable>
+          )}
 
-        <View style={styles.deltaPill}>
-          <Text style={styles.deltaArrow}>↗</Text>
-          <Text style={styles.deltaText}>2.46% this month</Text>
-        </View>
+          <View style={styles.deltaPill}>
+            <Text style={styles.deltaArrow}>↗</Text>
+            <Text style={styles.deltaText}>2.46% this month</Text>
+          </View>
+        </Pressable>
 
         <CardStack
           cards={cards}
           isLoading={isLoading}
           onOpenWallet={onOpenWallet}
+          onExpansionHeightChange={handleExpansionHeightChange}
+          onExpandedChange={handleExpandedChange}
+          collapseRequest={collapseCardStackRequest}
         />
       </View>
-    </View>
+    </Animated.View>
   );
 }
 
@@ -203,6 +260,9 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     letterSpacing: -0.4,
     marginTop: 16,
+  },
+  balanceTapArea: {
+    alignSelf: 'stretch',
   },
   noBalance: {
     alignSelf: 'center',

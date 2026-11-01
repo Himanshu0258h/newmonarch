@@ -59,7 +59,7 @@ export default function ActionRow({ onDeposit, onSwap, onWithdraw }: ActionRowPr
       <AnimatedPressable onPress={onDeposit} style={styles.actionPill}>
         <View style={[styles.actionContent, styles.actionPillSurface]}>
           <Feather name="arrow-up-right" size={22} color={theme.colors.text} />
-          <Text style={styles.actionText}>Deposit</Text>
+          <Text style={styles.actionText}>Income</Text>
         </View>
       </AnimatedPressable>
 
@@ -72,7 +72,7 @@ export default function ActionRow({ onDeposit, onSwap, onWithdraw }: ActionRowPr
       <AnimatedPressable onPress={onWithdraw} style={styles.actionPill}>
         <View style={[styles.actionContent, styles.actionPillSurface]}>
           <Feather name="arrow-down-right" size={22} color={theme.colors.text} />
-          <Text style={styles.actionText}>Withdraw</Text>
+          <Text style={styles.actionText}>Expense</Text>
         </View>
       </AnimatedPressable>
     </View>

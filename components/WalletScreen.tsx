@@ -1,15 +1,19 @@
 import React from 'react';
 import {
   Animated,
+  Alert,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
   useWindowDimensions,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as LocalAuthentication from 'expo-local-authentication';
 
 import {
   WalletCard as WalletCardData,
@@ -29,16 +33,27 @@ const categories: { id: WalletCategory; label: string; icon: keyof typeof Ionico
 const currency = (amount: number, currencyCode = 'INR') =>
   formatWalletCurrency(amount, currencyCode);
 
+const cardPalettes = [
+  ['#145B75', '#18354D', '#101827'],
+  ['#7B3F9B', '#482F78', '#202043'],
+  ['#386B59', '#21483F', '#142E32'],
+  ['#B15B3E', '#743B4A', '#352540'],
+  ['#BD772C', '#965027', '#502D2A'],
+] as const;
+
 function WalletCard({
   card,
   index,
   selected,
+  showBalanceFace,
 }: {
   card: WalletCardData;
   index: number;
   selected: boolean;
+  showBalanceFace: boolean;
 }) {
   const entrance = React.useRef(new Animated.Value(0)).current;
+  const flip = React.useRef(new Animated.Value(0)).current;
 
   React.useEffect(() => {
     Animated.spring(entrance, {
@@ -50,6 +65,24 @@ function WalletCard({
     }).start();
   }, [entrance]);
 
+  React.useEffect(() => {
+    Animated.spring(flip, {
+      toValue: showBalanceFace ? 1 : 0,
+      useNativeDriver: true,
+      tension: 55,
+      friction: 9,
+    }).start();
+  }, [flip, showBalanceFace]);
+
+  const frontRotation = flip.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '180deg'],
+  });
+  const backRotation = flip.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['180deg', '360deg'],
+  });
+
   const brand = card.network === 'Mastercard' ? (
     <View style={styles.mastercardMark}>
       <View style={[styles.mastercardCircle, styles.mastercardRed]} />
@@ -58,6 +91,7 @@ function WalletCard({
   ) : (
     <Text style={styles.cardNetwork}>{card.network}</Text>
   );
+  const isCashWallet = !card.number.trim();
 
   return (
     <Animated.View
@@ -83,29 +117,65 @@ function WalletCard({
         },
       ]}
     >
-      <LinearGradient
-        colors={card.colors}
-        start={{ x: 0.05, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
-      <View style={styles.cardLight} />
-      <View style={styles.cardTop}>
-        <View>
-          <Text style={styles.bankName}>{card.bank}</Text>
-          <Text style={styles.cardType}>{card.type} CARD</Text>
+      <Animated.View
+        style={[
+          styles.cardFace,
+          { transform: [{ perspective: 1000 }, { rotateY: frontRotation }] },
+        ]}
+      >
+        <LinearGradient
+          colors={card.colors}
+          start={{ x: 0.05, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <View style={styles.cardLight} />
+        <View style={styles.cardFaceContent}>
+          <View style={styles.cardTop}>
+            <View>
+              <Text style={styles.bankName}>{card.displayName || card.bank}</Text>
+              {!isCashWallet && <Text style={styles.cardType}>{card.type} CARD</Text>}
+            </View>
+            {!isCashWallet && <Feather name="wifi" size={22} color="rgba(255,255,255,0.78)" />}
+          </View>
+          {!isCashWallet && (
+            <>
+              <View style={styles.chip}>
+                <View style={styles.chipLineVertical} />
+                <View style={styles.chipLineHorizontal} />
+              </View>
+              <Text style={styles.cardNumber}>{card.number}</Text>
+              <View style={styles.cardBottom}>
+                <Text style={styles.cardHolder}>{card.holder}</Text>
+                {brand}
+              </View>
+            </>
+          )}
         </View>
-        <Feather name="wifi" size={22} color="rgba(255,255,255,0.78)" />
-      </View>
-      <View style={styles.chip}>
-        <View style={styles.chipLineVertical} />
-        <View style={styles.chipLineHorizontal} />
-      </View>
-      <Text style={styles.cardNumber}>{card.number}</Text>
-      <View style={styles.cardBottom}>
-        <Text style={styles.cardHolder}>{card.holder}</Text>
-        {brand}
-      </View>
+      </Animated.View>
+      <Animated.View
+        style={[
+          styles.cardBackFace,
+          { transform: [{ perspective: 1000 }, { rotateY: backRotation }] },
+        ]}
+      >
+        <LinearGradient
+          colors={[card.colors[1] ?? card.colors[0], card.colors[2] ?? card.colors[0]]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <View style={styles.balanceFaceContent}>
+          <Text style={styles.balanceFaceLabel}>{card.displayName || card.bank}</Text>
+          <Text style={styles.balanceFaceCaption}>AVAILABLE BALANCE</Text>
+          <Text numberOfLines={1} adjustsFontSizeToFit style={styles.balanceFaceValue}>
+            {currency(card.balance, card.currency ?? 'INR')}
+          </Text>
+          {isCashWallet ? null : (
+            <Text style={styles.balanceFaceNumber}>{card.number}</Text>
+          )}
+        </View>
+      </Animated.View>
     </Animated.View>
   );
 }
@@ -115,7 +185,7 @@ type WalletScreenProps = {
 };
 
 export default function WalletScreen({ focusCardId }: WalletScreenProps) {
-  const { cards, markCardUsed } = useWalletCards();
+  const { cards, addCard, markCardUsed } = useWalletCards();
   const { width } = useWindowDimensions();
   const cardWidth = Math.min(width * 0.82, 340);
   const cardOverlap = 42;
@@ -127,6 +197,18 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
   const [category, setCategory] = React.useState<WalletCategory>('debit');
   const [selectedId, setSelectedId] = React.useState('hdfc-debit');
   const [showAllTransactions, setShowAllTransactions] = React.useState(false);
+  const [balanceFaceCardId, setBalanceFaceCardId] = React.useState<string | null>(null);
+  const [balancesUnlocked, setBalancesUnlocked] = React.useState(false);
+  const [hasShownSwipeTip, setHasShownSwipeTip] = React.useState(false);
+  const [swipeTipVisible, setSwipeTipVisible] = React.useState(false);
+  const authenticationInProgress = React.useRef(false);
+  const [addCardVisible, setAddCardVisible] = React.useState(false);
+  const [newBankName, setNewBankName] = React.useState('');
+  const [newLastFour, setNewLastFour] = React.useState('');
+  const [newBalance, setNewBalance] = React.useState('');
+  const [newCardType, setNewCardType] = React.useState<'debit' | 'credit'>('debit');
+  const [newNetwork, setNewNetwork] = React.useState<'VISA' | 'Mastercard' | 'RuPay'>('VISA');
+  const [newPaletteIndex, setNewPaletteIndex] = React.useState(0);
 
   const visibleCards = React.useMemo(
     () => cards.filter((card) => card.category === category),
@@ -151,6 +233,87 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
         1,
       )
     : 0;
+
+  const revealCardBalance = React.useCallback(async (cardId: string) => {
+    if (balancesUnlocked) {
+      setBalanceFaceCardId(cardId);
+      return;
+    }
+    if (authenticationInProgress.current) return;
+
+    authenticationInProgress.current = true;
+    try {
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+      if (!hasHardware || !isEnrolled) {
+        Alert.alert(
+          'Biometrics unavailable',
+          'Set up a fingerprint or other biometric on your device to view card balances.',
+        );
+        return;
+      }
+
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: 'Verify to view card balance',
+        cancelLabel: 'Cancel',
+        disableDeviceFallback: true,
+      });
+      if (!result.success) return;
+
+      setBalancesUnlocked(true);
+      setBalanceFaceCardId(cardId);
+      if (!hasShownSwipeTip) {
+        setHasShownSwipeTip(true);
+        setSwipeTipVisible(true);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Please try again.';
+      Alert.alert('Could not verify', message);
+    } finally {
+      authenticationInProgress.current = false;
+    }
+  }, [balancesUnlocked, hasShownSwipeTip]);
+
+  const saveNewCard = () => {
+    const bank = newBankName.trim();
+    const lastFour = newLastFour.trim();
+    const balance = Number(newBalance);
+    if (!bank || !/^\d{4}$/.test(lastFour) || !Number.isFinite(balance) || balance < 0) return;
+
+    const cardCategory: WalletCategory = newCardType;
+    const cardId = `custom-${Date.now()}`;
+    addCard({
+      id: cardId,
+      bank: bank.toUpperCase(),
+      displayName: `${bank} ${newCardType === 'credit' ? 'Credit' : 'Debit'}`,
+      holder: 'CARDHOLDER',
+      type: newCardType.toUpperCase(),
+      category: cardCategory,
+      number: `•••• ${lastFour}`,
+      network: newNetwork,
+      expiry: '08 / 32',
+      currency: 'INR',
+      lastUsedAt: Date.now(),
+      colors: cardPalettes[newPaletteIndex],
+      balance,
+      monthlySpend: 0,
+      ...(newCardType === 'credit' ? { creditLimit: 200000, outstanding: 0 } : {}),
+      transactions: [],
+    });
+    setCategory(cardCategory);
+    setSelectedId(cardId);
+    setShowAllTransactions(false);
+    setAddCardVisible(false);
+    setNewBankName('');
+    setNewLastFour('');
+    setNewBalance('');
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const index = cards.filter((card) => card.category === cardCategory).length;
+        carouselRef.current?.scrollTo({ x: index * snapInterval, animated: true });
+      });
+    });
+  };
 
   React.useEffect(() => {
     carouselRef.current?.scrollTo({ x: 0, animated: false });
@@ -178,19 +341,11 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
     });
   }, [focusCardId, snapInterval]);
 
-  if (!selectedCard) {
-    return (
-      <View style={styles.emptyWallet}>
-        <Text style={styles.title}>Wallet</Text>
-        <Text style={styles.emptyWalletText}>Add your first card to get started.</Text>
-      </View>
-    );
-  }
-
   const selectCategory = (nextCategory: WalletCategory) => {
     const categoryIndex = categories.findIndex((item) => item.id === nextCategory);
     setCategory(nextCategory);
     setSelectedId(cards.find((card) => card.category === nextCategory)?.id ?? '');
+    setBalanceFaceCardId(null);
     setShowAllTransactions(false);
     Animated.parallel([
       Animated.spring(rotation, {
@@ -221,6 +376,7 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
     );
     setSelectedId(visibleCards[index].id);
     markCardUsed(visibleCards[index].id);
+    if (balancesUnlocked) setBalanceFaceCardId(visibleCards[index].id);
     setShowAllTransactions(false);
   };
 
@@ -245,6 +401,7 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
         onPress={() => {
           setSelectedId(card.id);
           markCardUsed(card.id);
+          void revealCardBalance(card.id);
           carouselRef.current?.scrollTo({ x: index * snapInterval, animated: true });
         }}
         style={{
@@ -259,7 +416,12 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
             transform: [{ scale }, { rotateZ: rotate }],
           }}
         >
-          <WalletCard card={card} index={index} selected={selected} />
+          <WalletCard
+            card={card}
+            index={index}
+            selected={selected}
+            showBalanceFace={card.id === balanceFaceCardId}
+          />
         </Animated.View>
       </Pressable>
     );
@@ -277,11 +439,18 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
           <Text style={styles.eyebrow}>MONARCH FINANCE</Text>
           <Text style={styles.title}>My Wallet</Text>
         </View>
-        <Pressable style={styles.profileButton} accessibilityLabel="Profile menu">
-          <Feather name="more-horizontal" size={23} color="#F6F7FB" />
+        <Pressable
+          style={styles.profileButton}
+          accessibilityRole="button"
+          accessibilityLabel="Add card"
+          onPress={() => setAddCardVisible(true)}
+        >
+          <Feather name="plus" size={23} color="#F6F7FB" />
         </Pressable>
       </View>
 
+      {selectedCard ? (
+      <>
       <View style={styles.carouselHeading}>
         <Text style={styles.sectionEyebrow}>YOUR CARDS</Text>
         <Text style={styles.cardCount}>
@@ -298,6 +467,8 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
         decelerationRate="fast"
         snapToInterval={snapInterval}
         snapToAlignment="start"
+        disableIntervalMomentum
+        bounces={false}
         contentContainerStyle={{ paddingHorizontal: insets }}
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: scrollX } } }], {
           useNativeDriver: true,
@@ -382,7 +553,7 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
       <View style={styles.detailHeading}>
         <View>
           <Text style={styles.sectionEyebrow}>CARD OVERVIEW</Text>
-            <Text style={styles.selectorTitle}>{selectedCard?.bank}</Text>
+            <Text style={styles.selectorTitle}>{selectedCard?.bank.toUpperCase()}</Text>
         </View>
         <View style={styles.cardTypeBadge}>
           <Text style={styles.cardTypeBadgeText}>{selectedCard.type}</Text>
@@ -395,13 +566,17 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
             <View>
               <Text style={styles.mutedLabel}>AVAILABLE CREDIT</Text>
               <Text style={styles.balanceValue}>
-                {currency(creditAvailable ?? 0, selectedCard.currency ?? 'INR')}
+                {balancesUnlocked
+                  ? currency(creditAvailable ?? 0, selectedCard.currency ?? 'INR')
+                  : '••••••'}
               </Text>
             </View>
             <View style={styles.outstandingBlock}>
               <Text style={styles.mutedLabel}>OUTSTANDING</Text>
               <Text style={styles.outstandingValue}>
-                {currency(selectedCard.outstanding ?? 0, selectedCard.currency ?? 'INR')}
+                {balancesUnlocked
+                  ? currency(selectedCard.outstanding ?? 0, selectedCard.currency ?? 'INR')
+                  : '••••••'}
               </Text>
             </View>
           </View>
@@ -426,10 +601,12 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
               {selectedCard.creditLimit ? 'CARD BALANCE' : category === 'transit' ? 'TRANSIT BALANCE' : 'AVAILABLE BALANCE'}
             </Text>
             <Text style={styles.balanceValue}>
-              {currency(
-                selectedCard.creditLimit ? creditAvailable ?? 0 : selectedCard.balance,
-                selectedCard.currency ?? 'INR',
-              )}
+              {balancesUnlocked
+                ? currency(
+                    selectedCard.creditLimit ? creditAvailable ?? 0 : selectedCard.balance,
+                    selectedCard.currency ?? 'INR',
+                  )
+                : '••••••'}
             </Text>
           </View>
           <View style={styles.balanceIcon}>
@@ -439,7 +616,9 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
         <View style={styles.spendingRow}>
           <Text style={styles.mutedLabel}>MONTHLY SPENDING</Text>
           <Text style={styles.spendingAmount}>
-            {currency(selectedCard.monthlySpend, selectedCard.currency ?? 'INR')}
+            {balancesUnlocked
+              ? currency(selectedCard.monthlySpend, selectedCard.currency ?? 'INR')
+              : '••••••'}
           </Text>
         </View>
         <View style={styles.creditTrack}>
@@ -475,6 +654,193 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
           </View>
         ))}
       </View>
+      </>
+      ) : (
+        <View style={styles.emptyWallet}>
+          <Text style={styles.emptyWalletText}>Add a bank card to get started.</Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setAddCardVisible(true)}
+            style={styles.addFirstCardButton}
+          >
+            <Feather name="plus" size={17} color="#FFFFFF" />
+            <Text style={styles.addFirstCardText}>Add your first card</Text>
+          </Pressable>
+        </View>
+      )}
+
+      <Modal
+        visible={swipeTipVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSwipeTipVisible(false)}
+      >
+        <View style={styles.tipOverlay}>
+          <View style={styles.swipeTipCard}>
+            <LinearGradient
+              colors={['#213B50', '#142334']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={StyleSheet.absoluteFill}
+            />
+            <View style={styles.tipIcon}>
+              <Feather name="check" size={22} color="#A8F0D2" />
+            </View>
+            <Text style={styles.tipEyebrow}>VERIFIED SECURELY</Text>
+            <Text style={styles.tipTitle}>Your balances are unlocked</Text>
+            <Text style={styles.tipMessage}>
+              Swipe one card at a time to bring it forward and reveal its balance.
+            </Text>
+            <View style={styles.tipSwipeHint}>
+              <Feather name="arrow-left" size={16} color="#A8F0D2" />
+              <Text style={styles.tipSwipeHintText}>SWIPE TO EXPLORE</Text>
+              <Feather name="arrow-right" size={16} color="#A8F0D2" />
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setSwipeTipVisible(false)}
+              style={styles.tipButton}
+            >
+              <Text style={styles.tipButtonText}>Got it</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={addCardVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setAddCardVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.addCardModal}>
+            <View style={styles.modalHeading}>
+              <View>
+                <Text style={styles.modalEyebrow}>WALLET</Text>
+                <Text style={styles.modalTitle}>Add a card</Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close add card"
+                onPress={() => setAddCardVisible(false)}
+                style={styles.modalClose}
+              >
+                <Feather name="x" size={20} color="#E5EAF3" />
+              </Pressable>
+            </View>
+
+            <Text style={styles.formLabel}>BANK NAME</Text>
+            <TextInput
+              value={newBankName}
+              onChangeText={(value) => setNewBankName(value.toUpperCase())}
+              placeholder="e.g. HDFC Bank"
+              placeholderTextColor="#68758B"
+              autoCapitalize="characters"
+              style={styles.formInput}
+              accessibilityLabel="Bank name"
+            />
+
+            <Text style={styles.formLabel}>LAST FOUR DIGITS</Text>
+            <TextInput
+              value={newLastFour}
+              onChangeText={(value) => setNewLastFour(value.replace(/\D/g, '').slice(0, 4))}
+              placeholder="1234"
+              placeholderTextColor="#68758B"
+              keyboardType="number-pad"
+              maxLength={4}
+              style={styles.formInput}
+              accessibilityLabel="Last four card digits"
+            />
+
+            <Text style={styles.formLabel}>BALANCE (INR)</Text>
+            <TextInput
+              value={newBalance}
+              onChangeText={(value) => setNewBalance(value.replace(/[^\d.]/g, ''))}
+              placeholder="0.00"
+              placeholderTextColor="#68758B"
+              keyboardType="decimal-pad"
+              style={styles.formInput}
+              accessibilityLabel="Card balance in INR"
+            />
+
+            <Text style={styles.formLabel}>CARD TYPE</Text>
+            <View style={styles.formOptions}>
+              {(['debit', 'credit'] as const).map((type) => (
+                <Pressable
+                  key={type}
+                  onPress={() => setNewCardType(type)}
+                  style={[styles.formOption, newCardType === type && styles.formOptionActive]}
+                >
+                  <Text style={[styles.formOptionText, newCardType === type && styles.formOptionTextActive]}>
+                    {type.toUpperCase()}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Text style={styles.formLabel}>NETWORK</Text>
+            <View style={styles.formOptions}>
+              {(['VISA', 'Mastercard', 'RuPay'] as const).map((network) => (
+                <Pressable
+                  key={network}
+                  onPress={() => setNewNetwork(network)}
+                  style={[styles.formOption, newNetwork === network && styles.formOptionActive]}
+                >
+                  <Text style={[styles.formOptionText, newNetwork === network && styles.formOptionTextActive]}>
+                    {network}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Text style={styles.formLabel}>CARD COLOR</Text>
+            <View style={styles.paletteRow}>
+              {cardPalettes.map((palette, index) => (
+                <Pressable
+                  key={palette[0]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Select card color ${index + 1}`}
+                  onPress={() => setNewPaletteIndex(index)}
+                  style={[
+                    styles.paletteSwatch,
+                    newPaletteIndex === index && styles.paletteSwatchSelected,
+                  ]}
+                >
+                  <LinearGradient
+                    colors={palette}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.paletteFill}
+                  />
+                </Pressable>
+              ))}
+            </View>
+
+            <Pressable
+              accessibilityRole="button"
+              disabled={
+                !newBankName.trim() ||
+                newLastFour.length !== 4 ||
+                !newBalance.trim() ||
+                !Number.isFinite(Number(newBalance))
+              }
+              onPress={saveNewCard}
+              style={[
+                styles.saveCardButton,
+                (
+                  !newBankName.trim() ||
+                  newLastFour.length !== 4 ||
+                  !newBalance.trim() ||
+                  !Number.isFinite(Number(newBalance))
+                ) && styles.saveCardButtonDisabled,
+              ]}
+            >
+              <Text style={styles.saveCardText}>Add card</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -490,6 +856,228 @@ const styles = StyleSheet.create({
     color: '#AAB4C5',
     fontSize: 14,
     marginTop: 10,
+  },
+  addFirstCardButton: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    marginTop: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    borderRadius: 16,
+    backgroundColor: '#25405A',
+    borderWidth: 1,
+    borderColor: '#426687',
+  },
+  addFirstCardText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.68)',
+  },
+  tipOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+    backgroundColor: 'rgba(3,7,13,0.76)',
+  },
+  swipeTipCard: {
+    width: '100%',
+    maxWidth: 360,
+    overflow: 'hidden',
+    alignItems: 'center',
+    paddingHorizontal: 25,
+    paddingTop: 27,
+    paddingBottom: 22,
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: 'rgba(160,207,236,0.22)',
+  },
+  tipIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(104,218,180,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(138,235,201,0.3)',
+    marginBottom: 16,
+  },
+  tipEyebrow: {
+    color: '#91DCC4',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 1.8,
+  },
+  tipTitle: {
+    color: '#F5F7FB',
+    fontSize: 21,
+    fontWeight: '600',
+    letterSpacing: -0.5,
+    textAlign: 'center',
+    marginTop: 9,
+  },
+  tipMessage: {
+    color: '#AAB8C9',
+    fontSize: 13,
+    lineHeight: 20,
+    textAlign: 'center',
+    marginTop: 10,
+  },
+  tipSwipeHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    paddingHorizontal: 15,
+    paddingVertical: 11,
+    borderRadius: 14,
+    backgroundColor: 'rgba(143,205,225,0.09)',
+    marginTop: 20,
+  },
+  tipSwipeHintText: {
+    color: '#B9D7E6',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 1.4,
+  },
+  tipButton: {
+    alignSelf: 'stretch',
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 14,
+    backgroundColor: '#3978A3',
+    marginTop: 21,
+  },
+  tipButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  addCardModal: {
+    paddingTop: 24,
+    paddingHorizontal: 22,
+    paddingBottom: 34,
+    backgroundColor: '#101722',
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    borderWidth: 1,
+    borderColor: '#273348',
+  },
+  modalHeading: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalEyebrow: {
+    color: '#8190A8',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 1.8,
+  },
+  modalTitle: {
+    color: '#F6F7FB',
+    fontSize: 24,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  modalClose: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#1C2635',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  formLabel: {
+    color: '#8290A6',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 1.4,
+    marginTop: 12,
+    marginBottom: 8,
+  },
+  formInput: {
+    height: 46,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#2A374A',
+    backgroundColor: '#151E2B',
+    paddingHorizontal: 14,
+    color: '#F3F5FA',
+    fontSize: 14,
+  },
+  formOptions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  formOption: {
+    minHeight: 40,
+    flex: 1,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#2A374A',
+    backgroundColor: '#151E2B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  formOptionActive: {
+    borderColor: '#6A9FC4',
+    backgroundColor: '#25405A',
+  },
+  formOptionText: {
+    color: '#AAB4C5',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  formOptionTextActive: {
+    color: '#FFFFFF',
+  },
+  paletteRow: {
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'center',
+  },
+  paletteSwatch: {
+    width: 43,
+    height: 43,
+    borderRadius: 15,
+    padding: 3,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  paletteSwatchSelected: {
+    borderColor: '#DCEBFA',
+  },
+  paletteFill: {
+    flex: 1,
+    borderRadius: 10,
+  },
+  saveCardButton: {
+    height: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 15,
+    backgroundColor: '#3978A3',
+    marginTop: 24,
+  },
+  saveCardButtonDisabled: {
+    opacity: 0.4,
+  },
+  saveCardText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
   },
   screen: {
     flex: 1,
@@ -565,6 +1153,58 @@ const styles = StyleSheet.create({
     shadowRadius: 20,
     elevation: 10,
   },
+  cardFace: {
+    ...StyleSheet.absoluteFill,
+    borderRadius: 24,
+    overflow: 'hidden',
+    backfaceVisibility: 'hidden',
+  },
+  cardFaceContent: {
+    flex: 1,
+    padding: 21,
+    justifyContent: 'space-between',
+  },
+  cardBackFace: {
+    ...StyleSheet.absoluteFill,
+    borderRadius: 24,
+    overflow: 'hidden',
+    backfaceVisibility: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  balanceFaceContent: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  balanceFaceLabel: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+  },
+  balanceFaceCaption: {
+    color: 'rgba(255,255,255,0.65)',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 1.6,
+    marginTop: 16,
+  },
+  balanceFaceValue: {
+    color: '#FFFFFF',
+    fontSize: 26,
+    fontWeight: '600',
+    letterSpacing: -0.5,
+    marginTop: 5,
+  },
+  balanceFaceNumber: {
+    color: 'rgba(255,255,255,0.76)',
+    fontSize: 12,
+    fontWeight: '500',
+    letterSpacing: 1.5,
+    marginTop: 18,
+  },
   cardLight: {
     position: 'absolute',
     width: 190,
@@ -584,6 +1224,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     letterSpacing: 1.5,
+    textTransform: 'uppercase',
   },
   cardType: {
     color: 'rgba(255,255,255,0.64)',

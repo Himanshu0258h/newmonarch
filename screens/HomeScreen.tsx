@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   FlatList,
+  Pressable,
   SafeAreaView,
   StatusBar,
   StyleSheet,
@@ -20,6 +21,8 @@ import { transactions } from '../data/transactions';
 export default function HomeScreen() {
   const [activeTab, setActiveTab] = React.useState<TabId>('card');
   const [walletFocusCardId, setWalletFocusCardId] = React.useState<string>();
+  const [homeCardsExpanded, setHomeCardsExpanded] = React.useState(false);
+  const [collapseCardStackRequest, setCollapseCardStackRequest] = React.useState(0);
   const { cards, isLoading } = useWalletCards();
   const topCards = React.useMemo(() => getTopCards(cards, 3), [cards]);
 
@@ -45,6 +48,11 @@ export default function HomeScreen() {
               cards={cards}
               isLoading={isLoading}
               onOpenWallet={openWallet}
+              onCardStackExpandedChange={setHomeCardsExpanded}
+              collapseCardStackRequest={collapseCardStackRequest}
+              onCollapseCardStack={() =>
+                setCollapseCardStackRequest((request) => request + 1)
+              }
             />
 
             <View style={styles.contentSheet}>
@@ -74,6 +82,14 @@ export default function HomeScreen() {
       </View>
 
       {activeTab === 'card' && <BottomFadeBlur />}
+      {activeTab === 'card' && homeCardsExpanded && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Collapse cards"
+          onPress={() => setCollapseCardStackRequest((request) => request + 1)}
+          style={styles.expandedCardsDismissArea}
+        />
+      )}
       <BottomTabBar activeTab={activeTab} onTabChange={setActiveTab} />
     </SafeAreaView>
   );
@@ -112,6 +128,10 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 0,
     borderTopRightRadius: 0,
     paddingTop: 18,
+  },
+  expandedCardsDismissArea: {
+    ...StyleSheet.absoluteFill,
+    zIndex: 1,
   },
   sectionHeader: {
     flexDirection: 'row',

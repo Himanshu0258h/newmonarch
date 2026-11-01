@@ -42,6 +42,22 @@ export type WalletCard = {
 
 export const walletCards: WalletCard[] = [
   {
+    id: 'cash-wallet',
+    bank: 'Cash Wallet',
+    displayName: 'Cash Wallet',
+    holder: '',
+    type: 'CASH',
+    category: 'debit',
+    number: '',
+    network: '',
+    currency: 'INR',
+    lastUsedAt: '2026-11-02T00:00:00.000Z',
+    colors: ['#386B59', '#21483F', '#142E32'],
+    balance: 0,
+    monthlySpend: 0,
+    transactions: [],
+  },
+  {
     id: 'hdfc-debit',
     bank: 'HDFC BANK',
     displayName: 'HDFC Debit Card',
