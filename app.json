@@ -1,0 +1,10 @@
+{
+  "expo": {
+    "name": "fintech-home-screen",
+    "slug": "fintech-home-screen",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "platforms": ["ios", "android"]
+  }
+}
