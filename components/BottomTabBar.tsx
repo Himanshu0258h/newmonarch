@@ -1,53 +1,52 @@
 import React from 'react';
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
-
-import theme from '../theme';
+import * as Haptics from 'expo-haptics';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
 
 export type TabId = 'card' | 'swap' | 'chart' | 'scan' | 'grid';
+
+const TABS: readonly TabId[] = ['card', 'swap', 'chart', 'scan', 'grid'];
+const ACTIVE_INDICATOR_SIZE = 48;
+const BAR_HEIGHT = 60;
 
 type BottomTabBarProps = {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
 };
 
-function AnimatedPressable({
+function AnimatedTabButton({
   onPress,
-  style,
+  onLayout,
   children,
 }: {
   onPress: () => void;
-  style: any;
+  onLayout: (event: LayoutChangeEvent) => void;
   children: React.ReactNode;
 }) {
-  const scale = React.useRef(new Animated.Value(1)).current;
-
-  const handlePressIn = () => {
-    Animated.spring(scale, {
-      toValue: 0.96,
-      useNativeDriver: true,
-      tension: 200,
-      friction: 10,
-    }).start();
-  };
-
-  const handlePressOut = () => {
-    Animated.spring(scale, {
-      toValue: 1,
-      useNativeDriver: true,
-      tension: 200,
-      friction: 10,
-    }).start();
-  };
+  const scale = useSharedValue(1);
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
 
   return (
     <Pressable
-      style={style}
+      onLayout={onLayout}
+      style={styles.tabButton}
       onPress={onPress}
-      onPressIn={handlePressIn}
-      onPressOut={handlePressOut}
+      onPressIn={() => {
+        scale.value = withTiming(0.92, { duration: 90 });
+      }}
+      onPressOut={() => {
+        scale.value = withSpring(1, { damping: 16, stiffness: 220 });
+      }}
     >
-      <Animated.View style={[styles.tabButtonContent, { transform: [{ scale }] }]}>
+      <Animated.View style={[styles.tabButtonContent, animatedStyle]}>
         {children}
       </Animated.View>
     </Pressable>
@@ -55,26 +54,68 @@ function AnimatedPressable({
 }
 
 export default function BottomTabBar({ activeTab, onTabChange }: BottomTabBarProps) {
+  const { width: screenWidth } = useWindowDimensions();
+  const positions = React.useRef<Partial<Record<TabId, number>>>({});
+  const indicatorX = useSharedValue(0);
+  const indicatorScale = useSharedValue(1);
+  const indicatorOpacity = useSharedValue(0);
+  const horizontalMargin = Math.min(40, screenWidth * 0.08);
+  const barWidth = Math.max(0, screenWidth - horizontalMargin * 2);
+  const indicatorSize = Math.max(
+    0,
+    Math.min(ACTIVE_INDICATOR_SIZE, BAR_HEIGHT - 8, barWidth / TABS.length - 4),
+  );
+
+  const indicatorStyle = useAnimatedStyle(() => ({
+    opacity: indicatorOpacity.value,
+    transform: [{ translateX: indicatorX.value }, { scale: indicatorScale.value }],
+  }));
+
+  const setPosition = React.useCallback(
+    (tab: TabId, event: LayoutChangeEvent) => {
+      const { x, width } = event.nativeEvent.layout;
+      const targetX = x + (width - indicatorSize) / 2;
+      positions.current[tab] = targetX;
+      if (tab === activeTab) {
+        indicatorX.value = targetX;
+        indicatorOpacity.value = withTiming(1, { duration: 120 });
+      }
+    },
+    [activeTab, indicatorOpacity, indicatorSize, indicatorX],
+  );
+
+  React.useEffect(() => {
+    const targetX = positions.current[activeTab];
+    if (targetX === undefined) return;
+    indicatorScale.value = withSpring(1.06, { damping: 15, stiffness: 260 }, (finished) => {
+      if (finished) indicatorScale.value = withSpring(1, { damping: 16, stiffness: 220 });
+    });
+    indicatorX.value = withSpring(targetX, { damping: 18, stiffness: 180 });
+  }, [activeTab, barWidth, indicatorScale, indicatorSize, indicatorX]);
+
   const renderTabIcon = (tab: TabId) => {
     const isActive = activeTab === tab;
-    const color = isActive ? theme.colors.white : theme.colors.text;
+    const iconColor = isActive ? '#FFFFFF' : '#111111';
 
     switch (tab) {
       case 'card':
-        return <Feather name="credit-card" size={25} color={color} />;
+        return <Feather name="home" size={25} color={iconColor} />;
       case 'swap':
-        return <Ionicons name="swap-vertical-outline" size={25} color={color} />;
+        return <Ionicons name="wallet-outline" size={25} color={iconColor} />;
       case 'chart':
-        return <Ionicons name="pie-chart-outline" size={25} color={color} />;
+        return <Ionicons name="pie-chart-outline" size={25} color={iconColor} />;
       case 'scan':
-        return <Ionicons name="scan-outline" size={25} color={color} />;
+        return <Ionicons name="scan-outline" size={25} color={iconColor} />;
       case 'grid':
         return (
           <View style={styles.gridWrap}>
             {Array.from({ length: 4 }).map((_, index) => (
               <View
                 key={index}
-                style={[styles.gridDot, isActive && styles.activeGridDot]}
+                style={[
+                  styles.gridDot,
+                  { backgroundColor: iconColor, opacity: isActive ? 1 : 0.9 },
+                ]}
               />
             ))}
           </View>
@@ -82,28 +123,50 @@ export default function BottomTabBar({ activeTab, onTabChange }: BottomTabBarPro
     }
   };
 
-  const renderTabButton = (tab: TabId) => {
-    const isActive = activeTab === tab;
-
-    return (
-      <AnimatedPressable
-        key={tab}
-        onPress={() => onTabChange(tab)}
-        style={styles.tabButton}
-      >
-        {isActive ? (
-          <View style={styles.activeCircle}>{renderTabIcon(tab)}</View>
-        ) : (
-          renderTabIcon(tab)
-        )}
-      </AnimatedPressable>
-    );
-  };
-
   return (
-    <View style={styles.wrapper}>
-      <View style={styles.tabBar}>
-        {(['card', 'swap', 'chart', 'scan', 'grid'] as const).map(renderTabButton)}
+    <View
+      style={[
+        styles.wrapper,
+        {
+          width: barWidth,
+          left: horizontalMargin,
+          right: undefined,
+        },
+      ]}
+    >
+      <View style={styles.shadowWrapper}>
+        <View style={styles.solidPill}>
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.activeIndicator,
+              {
+                top: (BAR_HEIGHT - indicatorSize) / 2,
+                width: indicatorSize,
+                height: indicatorSize,
+                borderRadius: indicatorSize / 2,
+              },
+              indicatorStyle,
+            ]}
+          >
+            <View />
+          </Animated.View>
+          <View style={styles.tabsRow}>
+            {TABS.map((tab) => (
+              <AnimatedTabButton
+                key={tab}
+                onLayout={(event) => setPosition(tab, event)}
+                onPress={() => {
+                  if (tab === activeTab) return;
+                  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  onTabChange(tab);
+                }}
+              >
+                {renderTabIcon(tab)}
+              </AnimatedTabButton>
+            ))}
+          </View>
+        </View>
       </View>
     </View>
   );
@@ -112,33 +175,44 @@ export default function BottomTabBar({ activeTab, onTabChange }: BottomTabBarPro
 const styles = StyleSheet.create({
   wrapper: {
     position: 'absolute',
-    left: 40,
-    right: 40,
     bottom: 16,
     alignItems: 'center',
     zIndex: 3,
     elevation: 3,
   },
-  tabBar: {
+  shadowWrapper: {
+    width: '100%',
+    height: BAR_HEIGHT,
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,0,0,0.01)',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.07,
+    shadowRadius: 14,
+    elevation: 5,
+  },
+  solidPill: {
+    flex: 1,
+    borderRadius: 999,
+    backgroundColor: '#F1F1F2',
+    overflow: 'hidden',
+  },
+  tabsRow: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-evenly',
-    width: '100%',
-    height: 60,
-    backgroundColor: '#F1F1F2',
-    borderRadius: 999,
     paddingHorizontal: 2,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.08,
-    shadowRadius: 18,
-    elevation: 10,
   },
   tabButton: {
-    width: 48,
+    flex: 1,
+    height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
-    height: '100%',
   },
   tabButtonContent: {
     flex: 1,
@@ -146,13 +220,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  activeCircle: {
-    width: 48,
-    height: 48,
+  activeIndicator: {
+    position: 'absolute',
+    left: 0,
     backgroundColor: '#111111',
-    borderRadius: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   gridWrap: {
     width: 23,
@@ -166,11 +237,5 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: theme.colors.text,
-    opacity: 0.9,
-  },
-  activeGridDot: {
-    backgroundColor: theme.colors.white,
-    opacity: 1,
   },
 });

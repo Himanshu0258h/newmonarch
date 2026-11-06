@@ -1,6 +1,7 @@
 import React from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 
 import theme from '../theme';
 
@@ -8,27 +9,23 @@ type ActionRowProps = {
   onDeposit: () => void;
   onSwap: () => void;
   onWithdraw: () => void;
+  isLoading?: boolean;
 };
 
 function AnimatedPressable({
   onPress,
+  haptic = false,
+  disabled = false,
   style,
   children,
 }: {
   onPress: () => void;
+  haptic?: boolean;
+  disabled?: boolean;
   style: any;
   children: React.ReactNode;
 }) {
   const scale = React.useRef(new Animated.Value(1)).current;
-
-  const handlePressIn = () => {
-    Animated.spring(scale, {
-      toValue: 0.97,
-      useNativeDriver: true,
-      tension: 180,
-      friction: 10,
-    }).start();
-  };
 
   const handlePressOut = () => {
     Animated.spring(scale, {
@@ -43,7 +40,16 @@ function AnimatedPressable({
     <Pressable
       style={style}
       onPress={onPress}
-      onPressIn={handlePressIn}
+      disabled={disabled}
+      onPressIn={() => {
+        Animated.spring(scale, {
+          toValue: 0.97,
+          useNativeDriver: true,
+          tension: 180,
+          friction: 10,
+        }).start();
+        if (haptic) void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }}
       onPressOut={handlePressOut}
     >
       <Animated.View style={[styles.animatedContent, { transform: [{ scale }] }]}>
@@ -53,10 +59,15 @@ function AnimatedPressable({
   );
 }
 
-export default function ActionRow({ onDeposit, onSwap, onWithdraw }: ActionRowProps) {
+export default function ActionRow({
+  onDeposit,
+  onSwap,
+  onWithdraw,
+  isLoading = false,
+}: ActionRowProps) {
   return (
     <View style={styles.container}>
-      <AnimatedPressable onPress={onDeposit} style={styles.actionPill}>
+      <AnimatedPressable onPress={onDeposit} haptic disabled={isLoading} style={styles.actionPill}>
         <View style={[styles.actionContent, styles.actionPillSurface]}>
           <Feather name="arrow-up-right" size={22} color={theme.colors.text} />
           <Text style={styles.actionText}>Income</Text>
@@ -69,7 +80,7 @@ export default function ActionRow({ onDeposit, onSwap, onWithdraw }: ActionRowPr
         </View>
       </AnimatedPressable>
 
-      <AnimatedPressable onPress={onWithdraw} style={styles.actionPill}>
+      <AnimatedPressable onPress={onWithdraw} haptic disabled={isLoading} style={styles.actionPill}>
         <View style={[styles.actionContent, styles.actionPillSurface]}>
           <Feather name="arrow-down-right" size={22} color={theme.colors.text} />
           <Text style={styles.actionText}>Expense</Text>

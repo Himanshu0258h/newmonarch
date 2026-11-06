@@ -16,11 +16,11 @@ import {
   formatWalletCurrency,
   getTopCards,
 } from '../context/WalletCardsContext';
-import { WalletCard } from '../data/walletCards';
+import { getWalletCardTypeLabel, WalletCard } from '../data/walletCards';
 
-const CARD_HEIGHT = 163;
-const EXPANDED_GAP = 12;
-const CARD_SIDE_INSET = 33;
+const CARD_HEIGHT = 150;
+const EXPANDED_GAP = 10;
+const CARD_SIDE_INSET = 28;
 const EXPANDED_SIDE_INSET = 37;
 
 type CardStackProps = {
@@ -63,8 +63,8 @@ function CardLayer({
   const transition = React.useRef(new Animated.Value(0)).current;
   const pressScale = React.useRef(new Animated.Value(1)).current;
   const flip = React.useRef(new Animated.Value(0)).current;
-  const collapsedInset = CARD_SIDE_INSET + rank * 16;
-  const collapsedTop = (count - rank - 1) * 16;
+  const collapsedInset = CARD_SIDE_INSET + rank * 14;
+  const collapsedTop = (count - rank - 1) * 14;
   const expandedTop = rank * (CARD_HEIGHT + EXPANDED_GAP);
   const cardColor = card.colors?.[0] ?? '#D56B37';
   const cardName = displayCardName(card);
@@ -73,6 +73,7 @@ function CardLayer({
   const isCashWallet = !hasNumber;
   const network = card.network?.trim();
   const balance = formatWalletCurrency(card.balance, card.currency ?? 'INR');
+  const monthlySpend = formatWalletCurrency(card.monthlySpend, card.currency ?? 'INR');
 
   React.useEffect(() => {
     flip.stopAnimation();
@@ -107,35 +108,24 @@ function CardLayer({
       return;
     }
 
-    const stagger = expanded ? (count - rank - 1) * 40 : 0;
-    const animation = Animated.sequence([
-      Animated.delay(stagger),
-      Animated.spring(transition, {
-        toValue: expanded ? 1 : 0,
-        useNativeDriver: false,
-        damping: 18,
-        stiffness: 160,
-        mass: 1,
-      }),
-    ]);
+    const animation = Animated.spring(transition, {
+      toValue: expanded ? 1 : 0,
+      useNativeDriver: true,
+      damping: 18,
+      stiffness: 160,
+      mass: 1,
+    });
     animation.start();
     return () => animation.stop();
-  }, [count, expanded, rank, reduceMotion, transition]);
+  }, [expanded, reduceMotion, transition]);
 
-  const left = transition.interpolate({
-    inputRange: [0, 1],
-    outputRange: [collapsedInset, EXPANDED_SIDE_INSET],
-  });
   const cardWidth = transition.interpolate({
     inputRange: [0, 1],
-    outputRange: [
-      width - collapsedInset * 2,
-      width - EXPANDED_SIDE_INSET * 2,
-    ],
+    outputRange: [1, (width - EXPANDED_SIDE_INSET * 2) / (width - collapsedInset * 2)],
   });
-  const top = transition.interpolate({
+  const translateY = transition.interpolate({
     inputRange: [0, 1],
-    outputRange: [collapsedTop, expandedTop],
+    outputRange: [0, expandedTop - collapsedTop],
   });
   const scale = transition.interpolate({
     inputRange: [0, 1],
@@ -146,7 +136,7 @@ function CardLayer({
     if (expanded) onInteract();
     Animated.spring(pressScale, {
       toValue: 0.98,
-      useNativeDriver: false,
+      useNativeDriver: true,
       damping: 18,
       stiffness: 220,
     }).start();
@@ -154,7 +144,7 @@ function CardLayer({
   const handlePressOut = () => {
     Animated.spring(pressScale, {
       toValue: 1,
-      useNativeDriver: false,
+      useNativeDriver: true,
       damping: 18,
       stiffness: 220,
     }).start();
@@ -165,13 +155,18 @@ function CardLayer({
       style={[
         styles.cardLayer,
         {
-          width: cardWidth,
-          left,
-          top,
+            width: width - collapsedInset * 2,
+            left: collapsedInset,
+            top: collapsedTop,
           opacity: 1,
           zIndex: count - rank,
           elevation: count - rank,
-          transform: [{ scale }, { scale: pressScale }],
+            transform: [
+              { translateY },
+              { scaleX: cardWidth },
+              { scale },
+              { scale: pressScale },
+            ],
         },
       ]}
     >
@@ -212,7 +207,7 @@ function CardLayer({
                   {cardName}
                 </Text>
                 {!isCashWallet && (
-                  <Text style={styles.cardType}>{card.type} CARD</Text>
+                  <Text style={styles.cardType}>{getWalletCardTypeLabel(card)}</Text>
                 )}
               </View>
               {hasNumber && (
@@ -249,9 +244,17 @@ function CardLayer({
               </View>
             ) : null}
             <View style={styles.cardBottomRow}>
-              <Text numberOfLines={1} style={styles.cardHolder}>
-                {hasNumber ? card.holder : 'CASH WALLET'}
-              </Text>
+              <View style={styles.cardFooterMeta}>
+                <Text numberOfLines={1} style={styles.cardHolder}>
+                  {hasNumber ? card.holder : 'CASH WALLET'}
+                </Text>
+                <View style={styles.monthlySpendWrap}>
+                  <Text style={styles.monthlySpendLabel}>SPENT</Text>
+                  <Text numberOfLines={1} adjustsFontSizeToFit style={styles.monthlySpendValue}>
+                    {monthlySpend}
+                  </Text>
+                </View>
+              </View>
             </View>
           </View>
         ) : (
@@ -337,7 +340,7 @@ export default function CardStack({
   collapseRequest = 0,
 }: CardStackProps) {
   const { width: screenWidth } = useWindowDimensions();
-  const stackWidth = screenWidth - 40;
+  const stackWidth = screenWidth - 48;
   const topCards = React.useMemo(() => getTopCards(cards, 3), [cards]);
   const [expanded, setExpanded] = React.useState(false);
   const [balanceCardId, setBalanceCardId] = React.useState<string | null>(null);
@@ -397,7 +400,7 @@ export default function CardStack({
     topCards.length * CARD_HEIGHT + Math.max(0, topCards.length - 1) * EXPANDED_GAP;
 
   React.useEffect(() => {
-    const additionalHeight = Math.max(0, expandedStackHeight - CARD_HEIGHT) + 30;
+    const additionalHeight = Math.max(0, expandedStackHeight - CARD_HEIGHT) + 12;
     onExpansionHeightChange?.(expanded ? additionalHeight : 0, reduceMotion);
   }, [expanded, expandedStackHeight, onExpansionHeightChange, reduceMotion]);
 
@@ -432,7 +435,7 @@ export default function CardStack({
   });
   const marginBottom = progress.interpolate({
     inputRange: [0, 1],
-    outputRange: [-30, 0],
+    outputRange: [-18, 0],
   });
 
   const expand = React.useCallback(() => {
@@ -560,8 +563,7 @@ export default function CardStack({
           accessibilityRole="button"
           accessibilityLabel="Add your first card"
           onPress={() => onOpenWallet()}
-          style={styles.emptyState}
-        >
+          style={styles.emptyState}  >
           <Text style={styles.emptyStateTitle}>Add your first card</Text>
           <Text style={styles.emptyStateSubtitle}>Tap to open Wallet</Text>
         </Pressable>
@@ -744,7 +746,14 @@ const styles = StyleSheet.create({
   },
   cardBottomRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  cardFooterMeta: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
     justifyContent: 'space-between',
     gap: 8,
   },
@@ -760,6 +769,24 @@ const styles = StyleSheet.create({
     fontSize: 7,
     fontWeight: '600',
     letterSpacing: 0.8,
+  },
+  monthlySpendWrap: {
+    alignItems: 'flex-end',
+    minWidth: 84,
+  },
+  monthlySpendLabel: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 6,
+    fontWeight: '700',
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
+  },
+  monthlySpendValue: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+    maxWidth: 90,
   },
   backCardName: {
     color: '#FFFFFF',

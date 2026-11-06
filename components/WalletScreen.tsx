@@ -2,60 +2,391 @@ import React from 'react';
 import {
   Animated,
   Alert,
+  Easing,
   Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
   useWindowDimensions,
+  type ViewInstance,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as LocalAuthentication from 'expo-local-authentication';
+import * as Haptics from 'expo-haptics';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Reanimated, {
+  useAnimatedScrollHandler,
+  useAnimatedStyle,
+  useReducedMotion,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
 
 import {
+  getWalletCardDisplayName,
+  getWalletCardTypeLabel,
   WalletCard as WalletCardData,
   WalletCategory,
+  WalletTransaction,
 } from '../data/walletCards';
+import {
+  sortTransactionsByTimestamp,
+  type Transaction,
+} from '../data/transactions';
 import {
   formatWalletCurrency,
   useWalletCards,
 } from '../context/WalletCardsContext';
-
-const categories: { id: WalletCategory; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-  { id: 'transit', label: 'Transit', icon: 'train-outline' },
-  { id: 'credit', label: 'Credit', icon: 'card-outline' },
-  { id: 'debit', label: 'Debit', icon: 'wallet-outline' },
-];
+import {
+  categoryFor,
+  getTransactionMode,
+} from '../utils/transactionCategories';
+import type { CardDraft } from '../utils/cardValidation';
+import CardDisintegrate from './wallet/CardDisintegrate';
+import AddCashExpenseSheet, { cashExpenseCategories } from './wallet/AddCashExpenseSheet';
+import AddCardSheet from './wallet/AddCardSheet';
+import ManageCardsSheet from './wallet/ManageCardsSheet';
+import PlusMenu from './wallet/PlusMenu';
+import SpendingHistoryScreen from './wallet/SpendingHistoryScreen';
+import WalletBackground from './wallet/WalletBackground';
+import SpendingOverview from './spending/SpendingOverview';
 
 const currency = (amount: number, currencyCode = 'INR') =>
   formatWalletCurrency(amount, currencyCode);
 
-const cardPalettes = [
-  ['#145B75', '#18354D', '#101827'],
-  ['#7B3F9B', '#482F78', '#202043'],
-  ['#386B59', '#21483F', '#142E32'],
-  ['#B15B3E', '#743B4A', '#352540'],
-  ['#BD772C', '#965027', '#502D2A'],
-] as const;
+const CARD_HEIGHT = 196;
+const CAROUSEL_BOTTOM_PADDING = 8;
+const CAROUSEL_HEIGHT = CARD_HEIGHT + CAROUSEL_BOTTOM_PADDING;
+
+function transactionDetail(date: Date) {
+  const now = new Date();
+  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const dayLabel =
+    day === today
+      ? 'Today'
+      : day === today - 24 * 60 * 60 * 1000
+        ? 'Yesterday'
+        : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return `${dayLabel} · ${date.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  })}`;
+}
+
+function SwipeDeleteCard({
+  children,
+  cardId,
+  cardName,
+  deleteVisible,
+  isDeleting,
+  hidden,
+  reducedMotionDelete,
+  restoreToken,
+  itemWidth,
+  cardWidth,
+  index,
+  deletedIndex,
+  lastCardDelete,
+  closeGap,
+  onSwipeUp,
+  onSwipeDown,
+  onDelete,
+  registerCardRef,
+}: {
+  children: React.ReactNode;
+  cardId: string;
+  cardName: string;
+  deleteVisible: boolean;
+  isDeleting: boolean;
+  hidden: boolean;
+  reducedMotionDelete: boolean;
+  restoreToken: number;
+  itemWidth: number;
+  cardWidth: number;
+  index: number;
+  deletedIndex: number;
+  lastCardDelete: boolean;
+  closeGap: Animated.Value;
+  onSwipeUp: (cardId: string) => void;
+  onSwipeDown: (cardId: string) => void;
+  onDelete: (cardId: string, cardName: string) => void;
+  registerCardRef: (cardId: string, node: ViewInstance | null) => void;
+}) {
+  const deleteReveal = React.useRef(new Animated.Value(deleteVisible ? 1 : 0)).current;
+  const restoreProgress = React.useRef(new Animated.Value(1)).current;
+  const wrapperOpacity = React.useRef(new Animated.Value(1)).current;
+
+  React.useLayoutEffect(() => {
+    if (isDeleting) {
+      deleteReveal.stopAnimation();
+      deleteReveal.setValue(0);
+    }
+  }, [deleteReveal, isDeleting]);
+
+  React.useEffect(() => {
+    if (isDeleting) return;
+    Animated.spring(deleteReveal, {
+      toValue: deleteVisible ? 1 : 0,
+      useNativeDriver: true,
+      damping: 18,
+      stiffness: 180,
+    }).start();
+  }, [deleteReveal, deleteVisible, isDeleting]);
+
+  React.useLayoutEffect(() => {
+    if (hidden) {
+      wrapperOpacity.stopAnimation();
+      wrapperOpacity.setValue(0);
+    }
+  }, [hidden, wrapperOpacity]);
+
+  React.useLayoutEffect(() => {
+    if (restoreToken === 0) return;
+    wrapperOpacity.stopAnimation();
+    wrapperOpacity.setValue(0);
+    restoreProgress.setValue(0);
+    Animated.parallel([
+      Animated.timing(wrapperOpacity, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: true,
+      }),
+      Animated.timing(restoreProgress, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [restoreProgress, restoreToken, wrapperOpacity]);
+
+  React.useEffect(() => {
+    if (!isDeleting || !reducedMotionDelete) return;
+    Animated.timing(wrapperOpacity, {
+      toValue: 0,
+      duration: 200,
+      useNativeDriver: true,
+    }).start();
+  }, [isDeleting, reducedMotionDelete, wrapperOpacity]);
+
+  React.useEffect(() => {
+    if (!__DEV__ || !isDeleting || !hidden) return;
+    const listener = wrapperOpacity.addListener(({ value }) => {
+      if (value > 0.001) {
+        console.warn(`Wallet delete wrapper for "${cardId}" became visible during its burst.`);
+      }
+    });
+    return () => wrapperOpacity.removeListener(listener);
+  }, [cardId, hidden, isDeleting, wrapperOpacity]);
+
+  const responder = React.useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_event, gesture) => {
+          if (isDeleting) return false;
+          const isHorizontalReset =
+            deleteVisible &&
+            Math.abs(gesture.dx) > 8 &&
+            Math.abs(gesture.dx) > Math.abs(gesture.dy);
+          const isDownwardReset = deleteVisible && gesture.dy > 6;
+          const isUpwardReveal =
+            !deleteVisible &&
+            gesture.dy < -8 &&
+            Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.2;
+          return isHorizontalReset || isDownwardReset || isUpwardReveal;
+        },
+        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
+          !isDeleting &&
+          deleteVisible &&
+          ((Math.abs(gesture.dx) > 8 && Math.abs(gesture.dx) > Math.abs(gesture.dy)) ||
+            gesture.dy > 6),
+        onPanResponderTerminationRequest: () => !deleteVisible || isDeleting,
+        onPanResponderRelease: (_event, gesture) => {
+          if (
+            deleteVisible &&
+            ((Math.abs(gesture.dx) > 12 && Math.abs(gesture.dx) > Math.abs(gesture.dy)) ||
+              gesture.dy > 10)
+          ) {
+            onSwipeDown(cardId);
+          } else if (gesture.dy < -14) {
+            onSwipeUp(cardId);
+          }
+        },
+      }),
+    [cardId, deleteVisible, isDeleting, onSwipeDown, onSwipeUp],
+  );
+
+  return (
+    <Animated.View
+      {...responder.panHandlers}
+      pointerEvents={hidden ? 'none' : 'auto'}
+      style={[
+        styles.swipeDeleteItem,
+        {
+          width: itemWidth,
+          height: CAROUSEL_HEIGHT,
+          opacity: wrapperOpacity,
+          transform: [
+            {
+              scale: restoreProgress.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0.9, 1],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
+      <Animated.View
+        ref={(node) => registerCardRef(cardId, node)}
+        pointerEvents={isDeleting ? 'none' : 'auto'}
+        style={{
+          width: cardWidth,
+          opacity: 1,
+          transform: [
+            {
+              translateX:
+                deletedIndex >= 0 && index > deletedIndex
+                  ? closeGap.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, -itemWidth],
+                    })
+                  : lastCardDelete && index === deletedIndex - 1
+                    ? closeGap.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0, itemWidth],
+                      })
+                  : 0,
+            },
+            {
+              translateY: deleteReveal.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, -18],
+              }),
+            },
+          ],
+        }}
+      >
+        {children}
+      </Animated.View>
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.deleteWhiteOverlay,
+          {
+            width: cardWidth,
+            opacity: deleteReveal.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, 0.58],
+            }),
+            transform: [
+              {
+                translateY: deleteReveal.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, -18],
+                }),
+              },
+            ],
+          },
+        ]}
+      />
+      <Animated.View
+        pointerEvents={deleteVisible ? 'auto' : 'none'}
+        style={[
+          styles.deleteAction,
+          { left: (cardWidth - 44) / 2 },
+          {
+            opacity: deleteReveal,
+            transform: [
+              {
+                translateY: deleteReveal.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [10, -18],
+                }),
+              },
+              {
+                scale: deleteReveal.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.85, 1],
+                }),
+              },
+            ],
+          },
+        ]}
+      >
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.deleteActionGlow,
+            {
+              opacity: deleteReveal.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, 0.9],
+              }),
+              transform: [
+                {
+                  scale: deleteReveal.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.65, 1],
+                  }),
+                },
+              ],
+            },
+          ]}
+        >
+          <View style={styles.deleteActionGlowInner} />
+          <View style={styles.deleteActionGlowCore} />
+        </Animated.View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Delete ${cardName}`}
+          disabled={isDeleting}
+          onPress={() => onDelete(cardId, cardName)}
+          style={styles.deleteActionButton}
+        >
+          <Feather name="trash-2" size={19} color="#FFFFFF" />
+        </Pressable>
+      </Animated.View>
+    </Animated.View>
+  );
+}
 
 function WalletCard({
   card,
   index,
   selected,
   showBalanceFace,
+  newlyAdded = false,
+  preview = false,
+  reducedMotion = false,
 }: {
   card: WalletCardData;
   index: number;
   selected: boolean;
   showBalanceFace: boolean;
+  newlyAdded?: boolean;
+  preview?: boolean;
+  reducedMotion?: boolean;
 }) {
   const entrance = React.useRef(new Animated.Value(0)).current;
   const flip = React.useRef(new Animated.Value(0)).current;
 
   React.useEffect(() => {
+    if (newlyAdded) {
+      entrance.setValue(0);
+      Animated.timing(entrance, {
+        toValue: 1,
+        duration: reducedMotion ? 180 : 350,
+        useNativeDriver: true,
+      }).start();
+      return;
+    }
     Animated.spring(entrance, {
       toValue: 1,
       delay: index * 90,
@@ -63,7 +394,7 @@ function WalletCard({
       tension: 55,
       friction: 9,
     }).start();
-  }, [entrance]);
+  }, [entrance, newlyAdded, reducedMotion]);
 
   React.useEffect(() => {
     Animated.spring(flip, {
@@ -89,22 +420,26 @@ function WalletCard({
       <View style={[styles.mastercardCircle, styles.mastercardGold]} />
     </View>
   ) : (
-    <Text style={styles.cardNetwork}>{card.network}</Text>
+    <Text style={styles.cardNetwork}>{card.network || 'WALLET'}</Text>
   );
-  const isCashWallet = !card.number.trim();
+  const cardNumber = card.number.trim() || 'CASH WALLET';
 
   return (
     <Animated.View
       style={[
         styles.bankCard,
         selected && {
-          shadowColor: card.colors[0],
-          shadowOpacity: 0.4,
-          shadowRadius: 22,
+          shadowColor: '#000000',
+          shadowOpacity: 0.35,
+          shadowRadius: 28,
+          shadowOffset: { width: 0, height: 14 },
           elevation: 14,
           borderColor: `${card.colors[0]}80`,
         },
         {
+          opacity: newlyAdded
+            ? entrance.interpolate({ inputRange: [0, 1], outputRange: [0, 1] })
+            : 1,
           transform: [
             {
               translateY: entrance.interpolate({
@@ -112,7 +447,12 @@ function WalletCard({
                 outputRange: [22, 0],
               }),
             },
-            { scale: entrance.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) },
+            {
+              scale: entrance.interpolate({
+                inputRange: [0, 1],
+                outputRange: [newlyAdded && !reducedMotion ? 0.92 : 0.96, 1],
+              }),
+            },
           ],
         },
       ]}
@@ -133,24 +473,26 @@ function WalletCard({
         <View style={styles.cardFaceContent}>
           <View style={styles.cardTop}>
             <View>
-              <Text style={styles.bankName}>{card.displayName || card.bank}</Text>
-              {!isCashWallet && <Text style={styles.cardType}>{card.type} CARD</Text>}
+              <Text style={[styles.bankName, preview && card.bank === 'BANK NAME' && styles.previewPlaceholder]}>
+                {getWalletCardDisplayName(card)}
+              </Text>
+              <Text style={styles.cardType}>{getWalletCardTypeLabel(card)}</Text>
             </View>
-            {!isCashWallet && <Feather name="wifi" size={22} color="rgba(255,255,255,0.78)" />}
+            <Feather name="wifi" size={22} color="rgba(255,255,255,0.78)" />
           </View>
-          {!isCashWallet && (
-            <>
-              <View style={styles.chip}>
-                <View style={styles.chipLineVertical} />
-                <View style={styles.chipLineHorizontal} />
-              </View>
-              <Text style={styles.cardNumber}>{card.number}</Text>
-              <View style={styles.cardBottom}>
-                <Text style={styles.cardHolder}>{card.holder}</Text>
-                {brand}
-              </View>
-            </>
-          )}
+          <View style={styles.chip}>
+            <View style={styles.chipLineVertical} />
+            <View style={styles.chipLineHorizontal} />
+          </View>
+          <Text style={[styles.cardNumber, preview && card.number === '•••• 0000' && styles.previewPlaceholder]}>
+            {cardNumber}
+          </Text>
+          <View style={styles.cardBottom}>
+            <Text style={[styles.cardHolder, preview && card.holder === 'CARD HOLDER' && styles.previewPlaceholder]}>
+              {card.holder || 'CASH ACCOUNT'}
+            </Text>
+            {brand}
+          </View>
         </View>
       </Animated.View>
       <Animated.View
@@ -166,14 +508,12 @@ function WalletCard({
           style={StyleSheet.absoluteFill}
         />
         <View style={styles.balanceFaceContent}>
-          <Text style={styles.balanceFaceLabel}>{card.displayName || card.bank}</Text>
+          <Text style={styles.balanceFaceLabel}>{getWalletCardDisplayName(card)}</Text>
           <Text style={styles.balanceFaceCaption}>AVAILABLE BALANCE</Text>
           <Text numberOfLines={1} adjustsFontSizeToFit style={styles.balanceFaceValue}>
             {currency(card.balance, card.currency ?? 'INR')}
           </Text>
-          {isCashWallet ? null : (
-            <Text style={styles.balanceFaceNumber}>{card.number}</Text>
-          )}
+          <Text style={styles.balanceFaceNumber}>{cardNumber}</Text>
         </View>
       </Animated.View>
     </Animated.View>
@@ -182,57 +522,219 @@ function WalletCard({
 
 type WalletScreenProps = {
   focusCardId?: string;
+  openAddCardRequest?: number;
+  onOpenActivity?: (cardId: string) => void;
+  onOpenTransaction?: (transactionId: string) => void;
 };
 
-export default function WalletScreen({ focusCardId }: WalletScreenProps) {
-  const { cards, addCard, markCardUsed } = useWalletCards();
+export default function WalletScreen({
+  focusCardId,
+  openAddCardRequest = 0,
+  onOpenActivity,
+  onOpenTransaction,
+}: WalletScreenProps) {
+  const {
+    cards,
+    transactions: globalTransactions,
+    isLoading,
+    addCard,
+    addTransaction,
+    removeCard,
+    updateCard,
+    reorderCards,
+    setDefaultCard,
+    markCardUsed,
+  } = useWalletCards();
   const { width } = useWindowDimensions();
+  const safeAreaInsets = useSafeAreaInsets();
   const cardWidth = Math.min(width * 0.82, 340);
   const cardOverlap = 42;
   const snapInterval = cardWidth - cardOverlap;
   const scrollX = React.useRef(new Animated.Value(0)).current;
   const carouselRef = React.useRef<React.ComponentRef<typeof Animated.ScrollView>>(null);
-  const rotation = React.useRef(new Animated.Value(0)).current;
-  const glow = React.useRef(new Animated.Value(1)).current;
+  const transactionsScrollRef = React.useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const transactionsScrollY = useSharedValue(0);
+  const backgroundScrollHandler = useAnimatedScrollHandler({
+    onScroll: (event) => {
+      transactionsScrollY.value = event.contentOffset.y;
+    },
+  });
+  const overlayRootRef = React.useRef<ViewInstance | null>(null);
+  const plusButtonRef = React.useRef<ViewInstance>(null);
+  const cardRefs = React.useRef(new Map<string, ViewInstance>());
+  const closeGap = React.useRef(new Animated.Value(0)).current;
   const [category, setCategory] = React.useState<WalletCategory>('debit');
-  const [selectedId, setSelectedId] = React.useState('hdfc-debit');
-  const [showAllTransactions, setShowAllTransactions] = React.useState(false);
+  const [selectedId, setSelectedId] = React.useState(() => cards[0]?.id ?? 'hdfc-debit');
+  const initializedFirstCard = React.useRef(false);
+  const [deleteActionCardId, setDeleteActionCardId] = React.useState<string | null>(null);
+  const [deletingCardId, setDeletingCardId] = React.useState<string | null>(null);
+  const [hiddenCardId, setHiddenCardId] = React.useState<string | null>(null);
+  const [reducedMotionCardId, setReducedMotionCardId] = React.useState<string | null>(null);
+  const [restoreCardId, setRestoreCardId] = React.useState<string | null>(null);
+  const [restoreToken, setRestoreToken] = React.useState(0);
+  const deleteConfirmed = React.useRef(false);
   const [balanceFaceCardId, setBalanceFaceCardId] = React.useState<string | null>(null);
   const [balancesUnlocked, setBalancesUnlocked] = React.useState(false);
   const [hasShownSwipeTip, setHasShownSwipeTip] = React.useState(false);
   const [swipeTipVisible, setSwipeTipVisible] = React.useState(false);
   const authenticationInProgress = React.useRef(false);
   const [addCardVisible, setAddCardVisible] = React.useState(false);
-  const [newBankName, setNewBankName] = React.useState('');
-  const [newLastFour, setNewLastFour] = React.useState('');
-  const [newBalance, setNewBalance] = React.useState('');
-  const [newCardType, setNewCardType] = React.useState<'debit' | 'credit'>('debit');
-  const [newNetwork, setNewNetwork] = React.useState<'VISA' | 'Mastercard' | 'RuPay'>('VISA');
-  const [newPaletteIndex, setNewPaletteIndex] = React.useState(0);
+  const [manageCardsVisible, setManageCardsVisible] = React.useState(false);
+  const [editingCard, setEditingCard] = React.useState<WalletCardData | null>(null);
+  const [plusMenuVisible, setPlusMenuVisible] = React.useState(false);
+  const [plusMenuAnchor, setPlusMenuAnchor] = React.useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [newlyAddedCardId, setNewlyAddedCardId] = React.useState<string | null>(null);
+  const [cardAddedToast, setCardAddedToast] = React.useState(false);
+  const [formInstance, setFormInstance] = React.useState(0);
+  const plusScale = useSharedValue(1);
+  const plusOpacity = useSharedValue(1);
+  const plusButtonStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: plusScale.value }],
+    opacity: plusOpacity.value,
+  }));
+  const reducedMotion = useReducedMotion();
+  const toastTimeout = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [addCashExpenseVisible, setAddCashExpenseVisible] = React.useState(false);
+  const [spendingHistoryVisible, setSpendingHistoryVisible] = React.useState(false);
 
-  const visibleCards = React.useMemo(
-    () => cards.filter((card) => card.category === category),
-    [cards, category],
-  );
+  const visibleCards = cards;
   const selectedCard =
     visibleCards.find((card) => card.id === selectedId) ?? visibleCards[0];
   const selectedIndex = selectedCard
     ? visibleCards.findIndex((card) => card.id === selectedCard.id)
     : 0;
+  const currentCardCounter = `${String(selectedIndex + 1).padStart(2, '0')} / ${String(visibleCards.length).padStart(2, '0')}`;
+  const [displayedCardCounter, setDisplayedCardCounter] = React.useState(currentCardCounter);
+  const cardCounterOpacity = React.useRef(new Animated.Value(1)).current;
   const insets = (width - cardWidth) / 2;
   const selectedTransactions = selectedCard?.transactions ?? [];
-  const maxTransactions = showAllTransactions
-    ? selectedTransactions.length
-    : Math.min(3, selectedTransactions.length);
-  const creditAvailable = selectedCard?.creditLimit
-    ? selectedCard.creditLimit - (selectedCard.outstanding ?? 0)
-    : undefined;
-  const spendingProgress = selectedCard
-    ? Math.min(
-        selectedCard.monthlySpend / (selectedCard.creditLimit ?? selectedCard.balance),
-        1,
-      )
-    : 0;
+  const deletingCard = cards.find((card) => card.id === deletingCardId);
+  const deletingIndex = deletingCardId
+    ? cards.findIndex((card) => card.id === deletingCardId)
+    : -1;
+  const transactionGroups = React.useMemo(() => {
+    if (!selectedCard) return [];
+    const transactions = sortTransactionsByTimestamp(
+      globalTransactions.filter((transaction) =>
+        transaction.accountId === selectedCard.id ||
+        (transaction.transferType === 'self' &&
+          transaction.destinationAccountId === selectedCard.id),
+      ),
+    );
+    if (!transactions.length) return [];
+    return [{
+      id: selectedCard.id,
+      title: getWalletCardDisplayName(selectedCard),
+      account: selectedCard,
+      transactions,
+    }];
+  }, [globalTransactions, selectedCard]);
+  const transactionListProgress = React.useRef(new Animated.Value(1)).current;
+  const previousTransactionSource = React.useRef({
+    cardId: selectedId,
+    transactions: selectedTransactions,
+  });
+
+  const scrollToTransactions = React.useCallback(() => {
+    setSpendingHistoryVisible(true);
+  }, []);
+
+  React.useEffect(() => {
+    if (isLoading || focusCardId || initializedFirstCard.current || visibleCards.length === 0) return;
+    initializedFirstCard.current = true;
+    const defaultCard = visibleCards.find((card) => card.isDefault) ?? visibleCards[0];
+    const defaultCardIndex = visibleCards.findIndex((card) => card.id === defaultCard.id);
+    setSelectedId(defaultCard.id);
+    setCategory(defaultCard.category);
+    requestAnimationFrame(() => {
+      carouselRef.current?.scrollTo({
+        x: Math.max(0, defaultCardIndex) * snapInterval,
+        animated: false,
+      });
+    });
+  }, [focusCardId, isLoading, snapInterval, visibleCards]);
+
+  const openAddCard = React.useCallback((card: WalletCardData | null = null) => {
+    setEditingCard(card);
+    setFormInstance((current) => current + 1);
+    setAddCardVisible(true);
+  }, []);
+
+  const openManageCards = React.useCallback(() => {
+    setManageCardsVisible(true);
+  }, []);
+
+  React.useEffect(() => {
+    if (openAddCardRequest > 0) openAddCard();
+  }, [openAddCard, openAddCardRequest]);
+
+  const measurePlusButton = React.useCallback(() => {
+    if (isLoading) return;
+    plusButtonRef.current?.measureInWindow((x, y, buttonWidth, buttonHeight) => {
+      setPlusMenuAnchor({ x, y, width: buttonWidth, height: buttonHeight });
+      setPlusMenuVisible(true);
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    });
+  }, [isLoading]);
+
+  React.useEffect(() => () => {
+    if (toastTimeout.current) clearTimeout(toastTimeout.current);
+  }, []);
+
+  React.useEffect(() => {
+    const previous = previousTransactionSource.current;
+    if (previous.cardId === selectedId && previous.transactions === selectedTransactions) return;
+    previousTransactionSource.current = {
+      cardId: selectedId,
+      transactions: selectedTransactions,
+    };
+    transactionListProgress.setValue(0);
+    Animated.timing(transactionListProgress, {
+      toValue: 1,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  }, [selectedId, selectedTransactions, transactionListProgress]);
+
+  React.useEffect(() => {
+    if (displayedCardCounter === currentCardCounter) return;
+    Animated.timing(cardCounterOpacity, {
+      toValue: 0,
+      duration: 75,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (!finished) return;
+      setDisplayedCardCounter(currentCardCounter);
+      Animated.timing(cardCounterOpacity, {
+        toValue: 1,
+        duration: 75,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    });
+  }, [cardCounterOpacity, currentCardCounter, displayedCardCounter]);
+
+  React.useEffect(() => {
+    if (!deletingCardId || deletingCard) return;
+    closeGap.setValue(0);
+    setDeleteActionCardId(null);
+    setDeletingCardId(null);
+    setHiddenCardId(null);
+    setReducedMotionCardId(null);
+    setRestoreCardId(null);
+    deleteConfirmed.current = false;
+  }, [cards, closeGap, deletingCard, deletingCardId]);
+
+  const registerCardRef = React.useCallback((cardId: string, node: ViewInstance | null) => {
+    if (node) cardRefs.current.set(cardId, node);
+    else cardRefs.current.delete(cardId);
+  }, []);
 
   const revealCardBalance = React.useCallback(async (cardId: string) => {
     if (balancesUnlocked) {
@@ -274,50 +776,133 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
     }
   }, [balancesUnlocked, hasShownSwipeTip]);
 
-  const saveNewCard = () => {
-    const bank = newBankName.trim();
-    const lastFour = newLastFour.trim();
-    const balance = Number(newBalance);
-    if (!bank || !/^\d{4}$/.test(lastFour) || !Number.isFinite(balance) || balance < 0) return;
+  const saveCardDraft = (
+    draft: CardDraft,
+    colors: readonly [string, string, string],
+    originalCard: WalletCardData | null,
+    onSaved: () => void,
+  ) => {
+    if (originalCard?.id === 'cash-wallet') {
+      updateCard(originalCard.id, {
+        bank: draft.bank.trim(),
+        displayName: draft.bank.trim(),
+        colors,
+      });
+      onSaved();
+      return;
+    }
 
-    const cardCategory: WalletCategory = newCardType;
-    const cardId = `custom-${Date.now()}`;
-    addCard({
+    const bank = draft.bank.trim();
+    const displayName = bank;
+    const cardType = draft.type.toUpperCase();
+    if (originalCard) {
+      updateCard(originalCard.id, {
+        bank: bank.toUpperCase(),
+        displayName,
+        holder: draft.holder.trim().toUpperCase(),
+        type: cardType,
+        category: draft.type,
+        number: `•••• ${draft.accountNumber.slice(-4)}`,
+        network: draft.network,
+        colors,
+        balance: draft.balance,
+        ...(draft.type === 'credit'
+          ? {
+              creditLimit: originalCard.creditLimit ?? 200000,
+              outstanding: originalCard.outstanding ?? 0,
+            }
+          : { creditLimit: undefined, outstanding: undefined }),
+      });
+      if (originalCard.id === selectedId) setCategory(draft.type);
+      onSaved();
+      return;
+    }
+
+    if (cards.filter((card) => card.id !== 'cash-wallet').length >= 10) {
+      Alert.alert('Card limit reached', 'You can add up to 10 cards.');
+      return;
+    }
+    const cardId = `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const newCard: WalletCardData = {
       id: cardId,
       bank: bank.toUpperCase(),
-      displayName: `${bank} ${newCardType === 'credit' ? 'Credit' : 'Debit'}`,
-      holder: 'CARDHOLDER',
-      type: newCardType.toUpperCase(),
-      category: cardCategory,
-      number: `•••• ${lastFour}`,
-      network: newNetwork,
+      displayName,
+      holder: draft.holder.trim().toUpperCase(),
+      type: cardType,
+      category: draft.type,
+      number: `•••• ${draft.accountNumber.slice(-4)}`,
+      network: draft.network,
       expiry: '08 / 32',
       currency: 'INR',
       lastUsedAt: Date.now(),
-      colors: cardPalettes[newPaletteIndex],
-      balance,
+      colors,
+      balance: draft.balance,
       monthlySpend: 0,
-      ...(newCardType === 'credit' ? { creditLimit: 200000, outstanding: 0 } : {}),
+      ...(draft.type === 'credit' ? { creditLimit: 200000, outstanding: 0 } : {}),
       transactions: [],
-    });
-    setCategory(cardCategory);
+    };
+    addCard(newCard);
+    setCategory(draft.type);
     setSelectedId(cardId);
-    setShowAllTransactions(false);
-    setAddCardVisible(false);
-    setNewBankName('');
-    setNewLastFour('');
-    setNewBalance('');
+    setNewlyAddedCardId(cardId);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const index = cards.filter((card) => card.category === cardCategory).length;
-        carouselRef.current?.scrollTo({ x: index * snapInterval, animated: true });
+        carouselRef.current?.scrollTo({ x: cards.length * snapInterval, animated: true });
       });
     });
+    onSaved();
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setCardAddedToast(true);
+    if (toastTimeout.current) clearTimeout(toastTimeout.current);
+    toastTimeout.current = setTimeout(() => setCardAddedToast(false), 2200);
   };
 
-  React.useEffect(() => {
-    carouselRef.current?.scrollTo({ x: 0, animated: false });
-  }, [category]);
+  const reorderCard = (card: WalletCardData, targetIndex: number) => {
+    const from = cards.findIndex((item) => item.id === card.id);
+    if (from < 0 || targetIndex < 0 || targetIndex >= cards.length || targetIndex === from) return;
+    const ordered = [...cards];
+    ordered.splice(from, 1);
+    ordered.splice(targetIndex, 0, card);
+    reorderCards(ordered);
+    const selectedPosition = ordered.findIndex((item) => item.id === selectedId);
+    carouselRef.current?.scrollTo({ x: Math.max(0, selectedPosition) * snapInterval, animated: true });
+  };
+
+  const deleteFromManage = (card: WalletCardData) => {
+    setManageCardsVisible(false);
+    const index = cards.findIndex((item) => item.id === card.id);
+    setSelectedId(card.id);
+    carouselRef.current?.scrollTo({ x: Math.max(0, index) * snapInterval, animated: true });
+    setDeleteActionCardId(card.id);
+    setTimeout(() => confirmDeleteCard(card.id, card.displayName || card.bank), 220);
+  };
+
+  const saveCashExpense = ({
+    amount,
+    category,
+    note,
+    date,
+  }: {
+    amount: number;
+    category: string;
+    note: string;
+    date: Date;
+  }) => {
+    if (!selectedCard || !selectedId) return;
+    const categoryInfo =
+      cashExpenseCategories.find((item) => item.label === category) ??
+      cashExpenseCategories[cashExpenseCategories.length - 1];
+    const transaction: WalletTransaction = {
+      id: `cash-${Date.now()}`,
+      merchant: note || category,
+      detail: transactionDetail(date),
+      amount,
+      icon: categoryInfo.icon,
+      category,
+    };
+    addTransaction(selectedId, transaction);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
 
   React.useEffect(() => {
     if (!focusCardId) return;
@@ -325,12 +910,9 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
     if (!focusedCard) return;
 
     const nextCategory = focusedCard.category;
-    const cardIndex = cards
-      .filter((card) => card.category === nextCategory)
-      .findIndex((card) => card.id === focusedCard.id);
+    const cardIndex = cards.findIndex((card) => card.id === focusedCard.id);
     setCategory(nextCategory);
     setSelectedId(focusedCard.id);
-    setShowAllTransactions(false);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         carouselRef.current?.scrollTo({
@@ -340,28 +922,6 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
       });
     });
   }, [focusCardId, snapInterval]);
-
-  const selectCategory = (nextCategory: WalletCategory) => {
-    const categoryIndex = categories.findIndex((item) => item.id === nextCategory);
-    setCategory(nextCategory);
-    setSelectedId(cards.find((card) => card.category === nextCategory)?.id ?? '');
-    setBalanceFaceCardId(null);
-    setShowAllTransactions(false);
-    Animated.parallel([
-      Animated.spring(rotation, {
-        toValue: categoryIndex * 120,
-        useNativeDriver: true,
-        tension: 55,
-        friction: 9,
-      }),
-      Animated.sequence([
-        Animated.timing(glow, { toValue: 1.18, duration: 120, useNativeDriver: true }),
-        Animated.spring(glow, { toValue: 1, useNativeDriver: true, tension: 70, friction: 7 }),
-      ]),
-    ]).start();
-    const nextCard = cards.find((card) => card.category === nextCategory);
-    if (nextCard) markCardUsed(nextCard.id);
-  };
 
   const onCarouselMomentumEnd = (event: {
     nativeEvent: { contentOffset: { x: number } };
@@ -374,11 +934,86 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
         Math.round(event.nativeEvent.contentOffset.x / snapInterval),
       ),
     );
+    setDeleteActionCardId(null);
     setSelectedId(visibleCards[index].id);
+    setCategory(visibleCards[index].category);
     markCardUsed(visibleCards[index].id);
     if (balancesUnlocked) setBalanceFaceCardId(visibleCards[index].id);
-    setShowAllTransactions(false);
   };
+
+  const restoreFailedDelete = React.useCallback((cardId: string) => {
+    const failedIndex = cards.findIndex((card) => card.id === cardId);
+    closeGap.setValue(0);
+    setHiddenCardId(null);
+    setReducedMotionCardId(null);
+    setDeletingCardId(null);
+    setRestoreCardId(cardId);
+    setRestoreToken((token) => token + 1);
+    carouselRef.current?.scrollTo({
+      x: Math.max(0, failedIndex) * snapInterval,
+      animated: true,
+    });
+    Alert.alert("Couldn't delete card");
+  }, [cards, closeGap, snapInterval]);
+
+  const completeDeleteCard = React.useCallback((cardId: string) => {
+    const deletedIndex = cards.findIndex((card) => card.id === cardId);
+    const remainingCards = cards.filter((card) => card.id !== cardId);
+    const nextCard = remainingCards[Math.min(deletedIndex, remainingCards.length - 1)];
+
+    try {
+      removeCard(cardId);
+      setBalanceFaceCardId(null);
+      setSelectedId(nextCard?.id ?? '');
+    } catch {
+      restoreFailedDelete(cardId);
+    }
+  }, [cards, closeGap, removeCard, restoreFailedDelete]);
+  const setDisintegrationCardHidden = React.useCallback(
+    (cardId: string, hidden: boolean) => {
+      setHiddenCardId((current) =>
+        hidden ? cardId : current === cardId ? null : current,
+      );
+    },
+    [],
+  );
+  const setReducedMotionDelete = React.useCallback((cardId: string, enabled: boolean) => {
+    setReducedMotionCardId((current) =>
+      enabled ? cardId : current === cardId ? null : current,
+    );
+  }, []);
+  const prepareCardSnapshot = React.useCallback((cardId: string) => {
+    setDeleteActionCardId((current) => (current === cardId ? null : current));
+  }, []);
+
+  const confirmDeleteCard = React.useCallback((cardId: string, cardName: string) => {
+    deleteConfirmed.current = false;
+    Alert.alert(
+      'Delete card?',
+      `Are you sure you want to delete ${cardName}? This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel', onPress: () => setDeleteActionCardId(null) },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            deleteConfirmed.current = true;
+            setDeletingCardId(cardId);
+          },
+        },
+      ],
+      {
+        cancelable: true,
+        onDismiss: () => {
+          if (deleteConfirmed.current) {
+            deleteConfirmed.current = false;
+            return;
+          }
+          setDeleteActionCardId(null);
+        },
+      },
+    );
+  }, []);
 
   const renderCard = (card: WalletCardData, index: number) => {
     const selected = card.id === selectedId;
@@ -396,89 +1031,155 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
     });
 
     return (
-      <Pressable
+      <SwipeDeleteCard
         key={card.id}
-        onPress={() => {
-          setSelectedId(card.id);
-          markCardUsed(card.id);
-          void revealCardBalance(card.id);
-          carouselRef.current?.scrollTo({ x: index * snapInterval, animated: true });
-        }}
-        style={{
-          width: cardWidth,
-          marginRight: -cardOverlap,
-          zIndex: overlapsSelected ? 2 : selected ? 1 : 0,
-          elevation: overlapsSelected ? 2 : selected ? 1 : 0,
-        }}
+        cardId={card.id}
+        cardName={card.displayName || card.bank}
+        deleteVisible={deleteActionCardId === card.id}
+        isDeleting={deletingCardId === card.id}
+        hidden={hiddenCardId === card.id}
+        reducedMotionDelete={reducedMotionCardId === card.id}
+        restoreToken={restoreCardId === card.id ? restoreToken : 0}
+        itemWidth={snapInterval}
+        cardWidth={cardWidth}
+        index={index}
+        deletedIndex={deletingIndex}
+        lastCardDelete={deletingIndex === cards.length - 1}
+        closeGap={closeGap}
+        onSwipeUp={setDeleteActionCardId}
+        onSwipeDown={(cardId) =>
+          setDeleteActionCardId((current) => (current === cardId ? null : current))
+        }
+        onDelete={confirmDeleteCard}
+        registerCardRef={registerCardRef}
       >
-        <Animated.View
+        <Pressable
+          disabled={deleteActionCardId === card.id}
+          onPress={() => {
+            setDeleteActionCardId(null);
+            setSelectedId(card.id);
+            setCategory(card.category);
+            markCardUsed(card.id);
+            void revealCardBalance(card.id);
+            carouselRef.current?.scrollTo({ x: index * snapInterval, animated: true });
+          }}
           style={{
-            transform: [{ scale }, { rotateZ: rotate }],
+            width: cardWidth,
+            zIndex: overlapsSelected ? 2 : selected ? 1 : 0,
+            elevation: overlapsSelected ? 2 : selected ? 1 : 0,
           }}
         >
-          <WalletCard
-            card={card}
-            index={index}
-            selected={selected}
-            showBalanceFace={card.id === balanceFaceCardId}
-          />
-        </Animated.View>
-      </Pressable>
+          <Animated.View
+            style={{
+              transform: [{ scale }, { rotateZ: rotate }],
+            }}
+          >
+            <WalletCard
+              card={card}
+              index={index}
+              selected={selected}
+              showBalanceFace={card.id === balanceFaceCardId}
+              newlyAdded={card.id === newlyAddedCardId}
+              reducedMotion={reducedMotion}
+            />
+          </Animated.View>
+        </Pressable>
+      </SwipeDeleteCard>
     );
   };
 
+  const renderPreviewCard = React.useCallback(
+    (card: WalletCardData) => (
+      <WalletCard
+        card={card}
+        index={0}
+        selected={false}
+        showBalanceFace={false}
+        preview
+        reducedMotion={reducedMotion}
+      />
+    ),
+    [],
+  );
+
   return (
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={styles.scrollContent}
-      showsVerticalScrollIndicator={false}
-      nestedScrollEnabled
+    <GestureHandlerRootView style={styles.walletRoot}>
+    <View ref={overlayRootRef} collapsable={false} style={styles.walletRoot}>
+    <WalletBackground
+      activeCardColor={selectedCard?.colors[0]}
+      scrollY={transactionsScrollY}
+    />
+    <View
+      style={[
+        styles.screen,
+        styles.scrollContent,
+      ]}
     >
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.eyebrow}>MONARCH FINANCE</Text>
-          <Text style={styles.title}>My Wallet</Text>
-        </View>
-        <Pressable
-          style={styles.profileButton}
-          accessibilityRole="button"
-          accessibilityLabel="Add card"
-          onPress={() => setAddCardVisible(true)}
-        >
-          <Feather name="plus" size={23} color="#F6F7FB" />
-        </Pressable>
+    <View style={[styles.header, { paddingTop: safeAreaInsets.top }]}>
+      <Text style={styles.title}>My Wallet</Text>
+        <Reanimated.View style={plusButtonStyle}>
+          <Pressable
+            ref={plusButtonRef}
+            style={styles.profileButton}
+            accessibilityRole="button"
+            accessibilityLabel="Wallet actions"
+            disabled={isLoading}
+            hitSlop={10}
+            onPress={measurePlusButton}
+            onPressIn={() => {
+              if (reducedMotion) {
+                plusOpacity.value = withTiming(0.7, { duration: 90 });
+              } else {
+                plusScale.value = withTiming(0.92, { duration: 90 });
+              }
+            }}
+            onPressOut={() => {
+              if (reducedMotion) {
+                plusOpacity.value = withTiming(1, { duration: 80 });
+              } else {
+                plusScale.value = withSpring(1, { damping: 16, stiffness: 220 });
+              }
+            }}
+          >
+            <Ionicons name="add" size={20} color="#FFFFFF" />
+          </Pressable>
+        </Reanimated.View>
       </View>
 
       {selectedCard ? (
       <>
       <View style={styles.carouselHeading}>
-        <Text style={styles.sectionEyebrow}>YOUR CARDS</Text>
-        <Text style={styles.cardCount}>
-          {String(selectedIndex + 1).padStart(2, '0')} / {String(visibleCards.length).padStart(2, '0')}
-        </Text>
+        <Text style={[styles.sectionEyebrow, styles.heroEyebrow]}>BANK ACCOUNTS</Text>
+        <Animated.Text style={[styles.cardCount, { opacity: cardCounterOpacity }]}>
+          {displayedCardCounter}
+        </Animated.Text>
       </View>
 
-      <Animated.ScrollView
-        key={category}
-        ref={carouselRef}
-        horizontal
-        nestedScrollEnabled
-        showsHorizontalScrollIndicator={false}
-        decelerationRate="fast"
-        snapToInterval={snapInterval}
-        snapToAlignment="start"
-        disableIntervalMomentum
-        bounces={false}
-        contentContainerStyle={{ paddingHorizontal: insets }}
-        onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: scrollX } } }], {
-          useNativeDriver: true,
-        })}
-        scrollEventThrottle={16}
-        onMomentumScrollEnd={onCarouselMomentumEnd}
-        style={styles.carousel}
-      >
-        {visibleCards.map(renderCard)}
-      </Animated.ScrollView>
+      <View style={[styles.carouselFrame, { height: CAROUSEL_HEIGHT }]}>
+        <Animated.ScrollView
+          ref={carouselRef}
+          horizontal
+          nestedScrollEnabled
+          showsHorizontalScrollIndicator={false}
+          decelerationRate="fast"
+          snapToInterval={snapInterval}
+          snapToAlignment="start"
+          disableIntervalMomentum
+          bounces={false}
+          contentContainerStyle={{ paddingHorizontal: insets, alignItems: 'flex-start' }}
+          onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: scrollX } } }], {
+            useNativeDriver: true,
+          })}
+          scrollEventThrottle={16}
+          onMomentumScrollEnd={(event) => {
+            if (deletingCardId === null) onCarouselMomentumEnd(event);
+          }}
+          scrollEnabled={deletingCardId === null}
+          style={[styles.carousel, { height: CAROUSEL_HEIGHT }]}
+        >
+          {visibleCards.map(renderCard)}
+        </Animated.ScrollView>
+      </View>
 
       <View style={styles.pagination}>
         {visibleCards.map((card, index) => (
@@ -489,170 +1190,128 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
         ))}
       </View>
 
-      <View style={styles.selectorSection}>
-        <View style={styles.sectionTitleBlock}>
-          <Text style={styles.sectionEyebrow}>EXPLORE</Text>
-          <Text style={styles.selectorTitle}>Choose a card type</Text>
-        </View>
-        <View style={styles.selector}>
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.selectorRing,
-              {
-                transform: [
-                  {
-                    rotate: rotation.interpolate({
-                      inputRange: [0, 360],
-                      outputRange: ['0deg', '360deg'],
-                    }),
-                  },
-                ],
-              },
-            ]}
-          />
-          <Animated.View style={[styles.selectorCore, { transform: [{ scale: glow }] }]}>
-            <View style={styles.selectorGlow} />
-            <Ionicons
-              name={categories.find((item) => item.id === category)?.icon ?? 'card-outline'}
-              size={24}
-              color="#F5F7FF"
-            />
-            <Text style={styles.selectorCoreLabel}>{category.toUpperCase()}</Text>
-          </Animated.View>
-          {categories.map((item, index) => (
-            <Pressable
-              key={item.id}
-              onPress={() => selectCategory(item.id)}
-              style={[
-                styles.categoryOption,
-                index === 0 && styles.categoryTop,
-                index === 1 && styles.categoryBottomLeft,
-                index === 2 && styles.categoryBottomRight,
-                category === item.id && styles.categoryOptionActive,
-              ]}
-            >
-              <Ionicons
-                name={item.icon}
-                size={17}
-                color={category === item.id ? '#FFFFFF' : '#9DA6B8'}
-              />
-              <Text
-                style={[
-                  styles.categoryLabel,
-                  category === item.id && styles.categoryLabelActive,
-                ]}
-              >
-                {item.label}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-      </View>
+      <View style={styles.sheet}>
+      <SpendingOverview
+        cards={cards}
+        selectedCardId={selectedId}
+        masked={!balancesUnlocked}
+        isLoading={isLoading}
+        onViewAll={() => {
+          if (onOpenActivity) onOpenActivity(selectedId);
+          else scrollToTransactions();
+        }}
+      />
 
-      <View style={styles.detailHeading}>
-        <View>
-          <Text style={styles.sectionEyebrow}>CARD OVERVIEW</Text>
-            <Text style={styles.selectorTitle}>{selectedCard?.bank.toUpperCase()}</Text>
-        </View>
-        <View style={styles.cardTypeBadge}>
-          <Text style={styles.cardTypeBadgeText}>{selectedCard.type}</Text>
-        </View>
-      </View>
-
-      {selectedCard.creditLimit && (
-        <View style={styles.balancePanel}>
-          <View style={styles.balancePanelTop}>
-            <View>
-              <Text style={styles.mutedLabel}>AVAILABLE CREDIT</Text>
-              <Text style={styles.balanceValue}>
-                {balancesUnlocked
-                  ? currency(creditAvailable ?? 0, selectedCard.currency ?? 'INR')
-                  : '••••••'}
-              </Text>
-            </View>
-            <View style={styles.outstandingBlock}>
-              <Text style={styles.mutedLabel}>OUTSTANDING</Text>
-              <Text style={styles.outstandingValue}>
-                {balancesUnlocked
-                  ? currency(selectedCard.outstanding ?? 0, selectedCard.currency ?? 'INR')
-                  : '••••••'}
-              </Text>
-            </View>
-          </View>
-          <View style={styles.creditTrack}>
-            <View
-              style={[
-                styles.creditFill,
-                { width: `${Math.min((selectedCard.outstanding ?? 0) / selectedCard.creditLimit * 100, 100)}%` },
-              ]}
-            />
-          </View>
-          <Text style={styles.creditFootnote}>
-            Credit limit {currency(selectedCard.creditLimit, selectedCard.currency ?? 'INR')}
-          </Text>
-        </View>
-      )}
-
-      <View style={styles.balancePanel}>
-        <View style={styles.balancePanelTop}>
-          <View>
-            <Text style={styles.mutedLabel}>
-              {selectedCard.creditLimit ? 'CARD BALANCE' : category === 'transit' ? 'TRANSIT BALANCE' : 'AVAILABLE BALANCE'}
-            </Text>
-            <Text style={styles.balanceValue}>
-              {balancesUnlocked
-                ? currency(
-                    selectedCard.creditLimit ? creditAvailable ?? 0 : selectedCard.balance,
-                    selectedCard.currency ?? 'INR',
-                  )
-                : '••••••'}
-            </Text>
-          </View>
-          <View style={styles.balanceIcon}>
-            <Feather name="trending-up" size={19} color="#67E2B1" />
-          </View>
-        </View>
-        <View style={styles.spendingRow}>
-          <Text style={styles.mutedLabel}>MONTHLY SPENDING</Text>
-          <Text style={styles.spendingAmount}>
-            {balancesUnlocked
-              ? currency(selectedCard.monthlySpend, selectedCard.currency ?? 'INR')
-              : '••••••'}
-          </Text>
-        </View>
-        <View style={styles.creditTrack}>
-          <View style={[styles.spendingFill, { width: `${Math.max(spendingProgress * 100, 4)}%` }]} />
-        </View>
-      </View>
-
-      <View style={styles.transactionsHeader}>
+      <View
+        style={styles.transactionsHeader}
+      >
         <View>
           <Text style={styles.sectionEyebrow}>ACTIVITY</Text>
           <Text style={styles.selectorTitle}>Recent transactions</Text>
         </View>
-        <Pressable onPress={() => setShowAllTransactions((current) => !current)}>
-          <Text style={styles.viewAll}>
-            {showAllTransactions ? 'Show less' : 'View all'}
-          </Text>
-        </Pressable>
       </View>
 
-      <View style={styles.transactionsList}>
-        {selectedTransactions.slice(0, maxTransactions).map((transaction) => (
-          <View key={transaction.id} style={styles.transactionRow}>
-            <View style={styles.transactionIcon}>
-              <Ionicons name={transaction.icon} size={19} color="#DCE2EF" />
-            </View>
-            <View style={styles.transactionInfo}>
-              <Text style={styles.transactionName}>{transaction.merchant}</Text>
-              <Text style={styles.transactionDate}>{transaction.detail}</Text>
-            </View>
-            <Text style={[styles.transactionAmount, transaction.positive && styles.positiveAmount]}>
-              {transaction.positive ? '+' : '−'}{currency(transaction.amount)}
-            </Text>
-          </View>
-        ))}
+      <Animated.View
+        style={[
+          styles.transactionsList,
+          {
+            opacity: transactionListProgress,
+            transform: [
+              {
+                translateY: transactionListProgress.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [16, 0],
+                }),
+              },
+            ],
+          },
+        ]}
+      >
+        <Reanimated.ScrollView
+          ref={transactionsScrollRef}
+          style={styles.transactionsScroll}
+          contentContainerStyle={[
+            styles.transactionsScrollContent,
+            { paddingBottom: safeAreaInsets.bottom + 120 },
+          ]}
+          bounces
+          nestedScrollEnabled
+          showsVerticalScrollIndicator={false}
+          onScroll={backgroundScrollHandler}
+          scrollEventThrottle={16}
+        >
+          {!balancesUnlocked ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Verify with fingerprint to view recent transactions"
+              onPress={() => {
+                if (selectedCard) void revealCardBalance(selectedCard.id);
+              }}
+              style={styles.lockedTransactions}
+            >
+              <View style={styles.lockedTransactionsIcon}>
+                <Ionicons name="finger-print-outline" size={23} color="#77777E" />
+              </View>
+              <Text style={styles.emptyTransactionsTitle}>Verify to view transactions</Text>
+              <Text style={styles.lockedTransactionsHint}>Tap to unlock with fingerprint</Text>
+            </Pressable>
+          ) : (
+            <>
+              {transactionGroups.map((group) => (
+                <View key={group.id} style={styles.accountTransactionGroup}>
+                  <View style={styles.accountTransactionHeading}>
+                    <View
+                      style={[
+                        styles.accountTransactionDot,
+                        { backgroundColor: group.account?.colors[0] ?? '#92929A' },
+                      ]}
+                    />
+                    <Text numberOfLines={1} style={styles.accountTransactionTitle}>
+                      {group.title}
+                    </Text>
+                  </View>
+                  {group.transactions.map((transaction) => {
+                    const incomingTransfer =
+                      transaction.transferType === 'self' &&
+                      transaction.destinationAccountId === group.account?.id;
+                    const mode = getTransactionMode(transaction);
+                    const income = incomingTransfer || mode === 'income';
+                    const category = categoryFor(mode, transaction.category ?? 'Other');
+                    return (
+                      <Pressable
+                        key={transaction.id}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Open transaction details for ${transaction.title}`}
+                        disabled={!onOpenTransaction}
+                        onPress={() => onOpenTransaction?.(transaction.id)}
+                        style={styles.transactionRow}
+                      >
+                        <View style={styles.transactionIcon}>
+                          <Ionicons name={category.icon} size={19} color="#6D6D73" />
+                        </View>
+                        <View style={styles.transactionInfo}>
+                          <Text numberOfLines={1} style={styles.transactionName}>
+                            {transaction.title}
+                          </Text>
+                          <Text style={styles.transactionDate}>{transaction.subtitle}</Text>
+                        </View>
+                        <Text style={[styles.transactionAmount, income && styles.positiveAmount]}>
+                          {income ? '+' : '−'}{currency(transaction.amount)}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ))}
+              {transactionGroups.length === 0 ? (
+                <View style={styles.emptyTransactions}>
+                  <Text style={styles.emptyTransactionsTitle}>No transactions yet</Text>
+                </View>
+              ) : null}
+            </>
+          )}
+        </Reanimated.ScrollView>
+      </Animated.View>
       </View>
       </>
       ) : (
@@ -660,7 +1319,7 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
           <Text style={styles.emptyWalletText}>Add a bank card to get started.</Text>
           <Pressable
             accessibilityRole="button"
-            onPress={() => setAddCardVisible(true)}
+            onPress={() => openAddCard()}
             style={styles.addFirstCardButton}
           >
             <Feather name="plus" size={17} color="#FFFFFF" />
@@ -707,153 +1366,96 @@ export default function WalletScreen({ focusCardId }: WalletScreenProps) {
         </View>
       </Modal>
 
-      <Modal
+      <PlusMenu
+        visible={plusMenuVisible}
+        anchor={plusMenuAnchor}
+        onClose={() => setPlusMenuVisible(false)}
+        onAddCard={() => openAddCard()}
+        onManageCards={openManageCards}
+      />
+      <AddCardSheet
+        key={`${editingCard?.id ?? 'new-card-form'}-${formInstance}`}
         visible={addCardVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setAddCardVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.addCardModal}>
-            <View style={styles.modalHeading}>
-              <View>
-                <Text style={styles.modalEyebrow}>WALLET</Text>
-                <Text style={styles.modalTitle}>Add a card</Text>
-              </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Close add card"
-                onPress={() => setAddCardVisible(false)}
-                style={styles.modalClose}
-              >
-                <Feather name="x" size={20} color="#E5EAF3" />
-              </Pressable>
-            </View>
-
-            <Text style={styles.formLabel}>BANK NAME</Text>
-            <TextInput
-              value={newBankName}
-              onChangeText={(value) => setNewBankName(value.toUpperCase())}
-              placeholder="e.g. HDFC Bank"
-              placeholderTextColor="#68758B"
-              autoCapitalize="characters"
-              style={styles.formInput}
-              accessibilityLabel="Bank name"
-            />
-
-            <Text style={styles.formLabel}>LAST FOUR DIGITS</Text>
-            <TextInput
-              value={newLastFour}
-              onChangeText={(value) => setNewLastFour(value.replace(/\D/g, '').slice(0, 4))}
-              placeholder="1234"
-              placeholderTextColor="#68758B"
-              keyboardType="number-pad"
-              maxLength={4}
-              style={styles.formInput}
-              accessibilityLabel="Last four card digits"
-            />
-
-            <Text style={styles.formLabel}>BALANCE (INR)</Text>
-            <TextInput
-              value={newBalance}
-              onChangeText={(value) => setNewBalance(value.replace(/[^\d.]/g, ''))}
-              placeholder="0.00"
-              placeholderTextColor="#68758B"
-              keyboardType="decimal-pad"
-              style={styles.formInput}
-              accessibilityLabel="Card balance in INR"
-            />
-
-            <Text style={styles.formLabel}>CARD TYPE</Text>
-            <View style={styles.formOptions}>
-              {(['debit', 'credit'] as const).map((type) => (
-                <Pressable
-                  key={type}
-                  onPress={() => setNewCardType(type)}
-                  style={[styles.formOption, newCardType === type && styles.formOptionActive]}
-                >
-                  <Text style={[styles.formOptionText, newCardType === type && styles.formOptionTextActive]}>
-                    {type.toUpperCase()}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            <Text style={styles.formLabel}>NETWORK</Text>
-            <View style={styles.formOptions}>
-              {(['VISA', 'Mastercard', 'RuPay'] as const).map((network) => (
-                <Pressable
-                  key={network}
-                  onPress={() => setNewNetwork(network)}
-                  style={[styles.formOption, newNetwork === network && styles.formOptionActive]}
-                >
-                  <Text style={[styles.formOptionText, newNetwork === network && styles.formOptionTextActive]}>
-                    {network}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            <Text style={styles.formLabel}>CARD COLOR</Text>
-            <View style={styles.paletteRow}>
-              {cardPalettes.map((palette, index) => (
-                <Pressable
-                  key={palette[0]}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Select card color ${index + 1}`}
-                  onPress={() => setNewPaletteIndex(index)}
-                  style={[
-                    styles.paletteSwatch,
-                    newPaletteIndex === index && styles.paletteSwatchSelected,
-                  ]}
-                >
-                  <LinearGradient
-                    colors={palette}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.paletteFill}
-                  />
-                </Pressable>
-              ))}
-            </View>
-
-            <Pressable
-              accessibilityRole="button"
-              disabled={
-                !newBankName.trim() ||
-                newLastFour.length !== 4 ||
-                !newBalance.trim() ||
-                !Number.isFinite(Number(newBalance))
-              }
-              onPress={saveNewCard}
-              style={[
-                styles.saveCardButton,
-                (
-                  !newBankName.trim() ||
-                  newLastFour.length !== 4 ||
-                  !newBalance.trim() ||
-                  !Number.isFinite(Number(newBalance))
-                ) && styles.saveCardButtonDisabled,
-              ]}
-            >
-              <Text style={styles.saveCardText}>Add card</Text>
-            </Pressable>
-          </View>
+        cards={cards}
+        card={editingCard}
+        onClose={() => {
+          setAddCardVisible(false);
+          setEditingCard(null);
+        }}
+        onSave={saveCardDraft}
+        renderPreview={renderPreviewCard}
+      />
+      <ManageCardsSheet
+        visible={manageCardsVisible}
+        cards={cards}
+        masked={!balancesUnlocked}
+        onClose={() => setManageCardsVisible(false)}
+        onAddCard={() => {
+          setManageCardsVisible(false);
+          openAddCard();
+        }}
+        onEdit={(card) => {
+          setManageCardsVisible(false);
+          openAddCard(card);
+        }}
+        onSetDefault={(card) => {
+          setDefaultCard(card.id);
+        }}
+        onDelete={deleteFromManage}
+        onMove={reorderCard}
+      />
+      {cardAddedToast ? (
+        <View pointerEvents="none" style={styles.toast}>
+          <Feather name="check-circle" size={16} color="#FFFFFF" />
+          <Text style={styles.toastText}>Card added</Text>
         </View>
-      </Modal>
-    </ScrollView>
+      ) : null}
+      <AddCashExpenseSheet
+        visible={addCashExpenseVisible}
+        accountName={selectedCard?.displayName || selectedCard?.bank || 'Wallet'}
+        onClose={() => setAddCashExpenseVisible(false)}
+        onSave={saveCashExpense}
+      />
+    </View>
+    {spendingHistoryVisible && selectedCard ? (
+      <SpendingHistoryScreen
+        key={selectedCard.id}
+        card={selectedCard}
+        onBack={() => setSpendingHistoryVisible(false)}
+      />
+    ) : null}
+    {deletingCard && deletingCardId ? (
+      <CardDisintegrate
+        active
+        cardId={deletingCardId}
+        colors={deletingCard.colors}
+        card={cardRefs.current.get(deletingCardId) ?? null}
+        overlayRootRef={overlayRootRef}
+        closeGap={closeGap}
+        onPrepareSnapshot={prepareCardSnapshot}
+        onCardHidden={setDisintegrationCardHidden}
+        onReducedMotionMode={setReducedMotionDelete}
+        onMeasureFailure={restoreFailedDelete}
+        onComplete={completeDeleteCard}
+      />
+    ) : null}
+    </View>
+    </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
+  walletRoot: {
+    flex: 1,
+  },
   emptyWallet: {
     flex: 1,
-    backgroundColor: '#080B12',
+    backgroundColor: '#FFFFFF',
     paddingTop: 24,
     paddingHorizontal: 24,
   },
   emptyWalletText: {
-    color: '#AAB4C5',
+    color: '#6B6B6B',
     fontSize: 14,
     marginTop: 10,
   },
@@ -866,9 +1468,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 13,
     borderRadius: 16,
-    backgroundColor: '#25405A',
+    backgroundColor: '#E8420F',
     borderWidth: 1,
-    borderColor: '#426687',
+    borderColor: '#F5873F',
   },
   addFirstCardText: {
     color: '#FFFFFF',
@@ -878,14 +1480,14 @@ const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     justifyContent: 'flex-end',
-    backgroundColor: 'rgba(0,0,0,0.68)',
+    backgroundColor: 'rgba(50,30,20,0.42)',
   },
   tipOverlay: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 28,
-    backgroundColor: 'rgba(3,7,13,0.76)',
+    backgroundColor: 'rgba(50,30,20,0.42)',
   },
   swipeTipCard: {
     width: '100%',
@@ -897,7 +1499,7 @@ const styles = StyleSheet.create({
     paddingBottom: 22,
     borderRadius: 26,
     borderWidth: 1,
-    borderColor: 'rgba(160,207,236,0.22)',
+    borderColor: 'rgba(232,66,15,0.18)',
   },
   tipIcon: {
     width: 52,
@@ -905,19 +1507,19 @@ const styles = StyleSheet.create({
     borderRadius: 26,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(104,218,180,0.14)',
+    backgroundColor: 'rgba(232,66,15,0.1)',
     borderWidth: 1,
-    borderColor: 'rgba(138,235,201,0.3)',
+    borderColor: 'rgba(232,66,15,0.2)',
     marginBottom: 16,
   },
   tipEyebrow: {
-    color: '#91DCC4',
+    color: '#C63A13',
     fontSize: 9,
     fontWeight: '700',
     letterSpacing: 1.8,
   },
   tipTitle: {
-    color: '#F5F7FB',
+    color: '#202124',
     fontSize: 21,
     fontWeight: '600',
     letterSpacing: -0.5,
@@ -925,7 +1527,7 @@ const styles = StyleSheet.create({
     marginTop: 9,
   },
   tipMessage: {
-    color: '#AAB8C9',
+    color: '#686868',
     fontSize: 13,
     lineHeight: 20,
     textAlign: 'center',
@@ -939,11 +1541,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 15,
     paddingVertical: 11,
     borderRadius: 14,
-    backgroundColor: 'rgba(143,205,225,0.09)',
+    backgroundColor: 'rgba(232,66,15,0.08)',
     marginTop: 20,
   },
   tipSwipeHintText: {
-    color: '#B9D7E6',
+    color: '#8C351F',
     fontSize: 9,
     fontWeight: '700',
     letterSpacing: 1.4,
@@ -954,7 +1556,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 14,
-    backgroundColor: '#3978A3',
+    backgroundColor: '#E8420F',
     marginTop: 21,
   },
   tipButtonText: {
@@ -966,11 +1568,11 @@ const styles = StyleSheet.create({
     paddingTop: 24,
     paddingHorizontal: 22,
     paddingBottom: 34,
-    backgroundColor: '#101722',
+    backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 26,
     borderTopRightRadius: 26,
     borderWidth: 1,
-    borderColor: '#273348',
+    borderColor: '#EAEAEA',
   },
   modalHeading: {
     flexDirection: 'row',
@@ -979,13 +1581,13 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   modalEyebrow: {
-    color: '#8190A8',
+    color: '#8B8B90',
     fontSize: 9,
     fontWeight: '700',
     letterSpacing: 1.8,
   },
   modalTitle: {
-    color: '#F6F7FB',
+    color: '#1C1C1E',
     fontSize: 24,
     fontWeight: '600',
     marginTop: 4,
@@ -994,153 +1596,165 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: '#1C2635',
+    backgroundColor: '#F2F2F2',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  formLabel: {
-    color: '#8290A6',
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 1.4,
-    marginTop: 12,
-    marginBottom: 8,
-  },
-  formInput: {
-    height: 46,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#2A374A',
-    backgroundColor: '#151E2B',
-    paddingHorizontal: 14,
-    color: '#F3F5FA',
-    fontSize: 14,
-  },
-  formOptions: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  formOption: {
-    minHeight: 40,
-    flex: 1,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#2A374A',
-    backgroundColor: '#151E2B',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  formOptionActive: {
-    borderColor: '#6A9FC4',
-    backgroundColor: '#25405A',
-  },
-  formOptionText: {
-    color: '#AAB4C5',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  formOptionTextActive: {
-    color: '#FFFFFF',
-  },
-  paletteRow: {
-    flexDirection: 'row',
-    gap: 12,
-    alignItems: 'center',
-  },
-  paletteSwatch: {
-    width: 43,
-    height: 43,
-    borderRadius: 15,
-    padding: 3,
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  paletteSwatchSelected: {
-    borderColor: '#DCEBFA',
-  },
-  paletteFill: {
-    flex: 1,
-    borderRadius: 10,
-  },
-  saveCardButton: {
-    height: 50,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 15,
-    backgroundColor: '#3978A3',
-    marginTop: 24,
-  },
-  saveCardButtonDisabled: {
-    opacity: 0.4,
-  },
-  saveCardText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '700',
   },
   screen: {
     flex: 1,
-    backgroundColor: '#080B12',
+    backgroundColor: 'transparent',
   },
   scrollContent: {
-    paddingTop: 16,
-    paddingBottom: 146,
+    flex: 1,
+    minHeight: 0,
+    paddingTop: 0,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginHorizontal: 24,
-    marginBottom: 26,
-  },
-  eyebrow: {
-    color: '#667187',
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 2,
+    marginHorizontal: 20,
+    marginBottom: 0,
   },
   title: {
-    color: '#F6F7FB',
-    fontSize: 30,
-    fontWeight: '600',
-    letterSpacing: -0.8,
-    marginTop: 4,
+    color: '#FFFFFF',
+    fontSize: 33,
+    lineHeight: 40,
+    fontWeight: '700',
+    letterSpacing: -0.7,
   },
   profileButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#151B27',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.18)',
     borderWidth: 1,
-    borderColor: '#242C3A',
+    borderColor: 'rgba(255,255,255,0.35)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  plusButtonContent: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toast: {
+    position: 'absolute',
+    alignSelf: 'center',
+    bottom: 94,
+    zIndex: 1100,
+    elevation: 1100,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 22,
+    backgroundColor: '#222228',
+  },
+  toastText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
   },
   carouselHeading: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginHorizontal: 24,
+    alignItems: 'baseline',
+    marginHorizontal: 20,
     marginBottom: 12,
   },
   sectionEyebrow: {
-    color: '#748096',
+    color: '#888888',
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 1.7,
   },
+  heroEyebrow: {
+    color: 'rgba(255,255,255,0.7)',
+  },
   cardCount: {
-    color: '#828DA1',
+    color: 'rgba(255,255,255,0.85)',
     fontSize: 12,
     fontWeight: '600',
     letterSpacing: 1.2,
+    fontVariant: ['tabular-nums'],
   },
   carousel: {
     overflow: 'visible',
   },
-  bankCard: {
+  carouselFrame: {
+    flexShrink: 0,
+    overflow: 'visible',
+  },
+  swipeDeleteItem: {
+    position: 'relative',
+    overflow: 'visible',
+  },
+  deleteAction: {
+    position: 'absolute',
+    top: 76,
+    zIndex: 20,
+    elevation: 20,
+  },
+  deleteWhiteOverlay: {
+    position: 'absolute',
+    top: 0,
     height: 196,
+    borderRadius: 24,
+    backgroundColor: '#FFFFFF',
+    zIndex: 12,
+    elevation: 12,
+  },
+  deleteActionGlow: {
+    position: 'absolute',
+    width: 104,
+    height: 104,
+    top: -30,
+    left: -30,
+    borderRadius: 52,
+    backgroundColor: 'rgba(239,65,35,0.035)',
+    shadowColor: '#F04A27',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.48,
+    shadowRadius: 30,
+    elevation: 10,
+  },
+  deleteActionGlowInner: {
+    position: 'absolute',
+    width: 78,
+    height: 78,
+    top: 13,
+    left: 13,
+    borderRadius: 39,
+    backgroundColor: 'rgba(239,65,35,0.07)',
+  },
+  deleteActionGlowCore: {
+    position: 'absolute',
+    width: 54,
+    height: 54,
+    top: 25,
+    left: 25,
+    borderRadius: 27,
+    backgroundColor: 'rgba(239,65,35,0.12)',
+  },
+  deleteActionButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 22,
+    backgroundColor: '#D93620',
+    borderWidth: 3,
+    borderColor: '#FFF8F4',
+    shadowColor: '#F04A27',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.75,
+    shadowRadius: 16,
+    elevation: 12,
+  },
+  bankCard: {
+    height: CARD_HEIGHT,
     borderRadius: 24,
     padding: 21,
     overflow: 'hidden',
@@ -1280,6 +1894,9 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     letterSpacing: -0.8,
   },
+  previewPlaceholder: {
+    opacity: 0.5,
+  },
   mastercardMark: {
     flexDirection: 'row',
     width: 42,
@@ -1310,142 +1927,71 @@ const styles = StyleSheet.create({
     width: 5,
     height: 5,
     borderRadius: 3,
-    backgroundColor: '#343D4C',
+    backgroundColor: 'rgba(255,255,255,0.4)',
   },
   paginationDotActive: {
     width: 18,
-    backgroundColor: '#A8B4CA',
+    backgroundColor: '#FFFFFF',
   },
-  selectorSection: {
-    alignItems: 'center',
-    marginTop: 16,
-  },
-  sectionTitleBlock: {
-    alignSelf: 'stretch',
-    marginHorizontal: 24,
-    marginBottom: 10,
+  sheet: {
+    flex: 1,
+    minHeight: 0,
+    marginTop: -28,
+    paddingTop: 28,
+    backgroundColor: '#FFF8F5',
+    borderTopLeftRadius: 40,
+    borderTopRightRadius: 40,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: -8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 24,
+    elevation: 12,
   },
   selectorTitle: {
-    color: '#F1F3F8',
+    color: '#252525',
     fontSize: 17,
     fontWeight: '600',
     letterSpacing: -0.25,
     marginTop: 5,
   },
-  selector: {
-    width: 224,
-    height: 224,
-    borderRadius: 112,
-    backgroundColor: '#0E131E',
-    borderWidth: 1,
-    borderColor: '#1E2837',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  selectorRing: {
-    position: 'absolute',
-    width: 170,
-    height: 170,
-    borderRadius: 85,
-    borderWidth: 1,
-    borderColor: '#263146',
-    borderStyle: 'dashed',
-  },
-  selectorCore: {
-    width: 92,
-    height: 92,
-    borderRadius: 46,
-    backgroundColor: '#1A2639',
-    borderWidth: 1,
-    borderColor: '#385071',
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-  },
-  selectorGlow: {
-    position: 'absolute',
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    backgroundColor: 'rgba(74,157,221,0.28)',
-  },
-  selectorCoreLabel: {
-    color: '#C4D5EA',
-    fontSize: 8,
-    fontWeight: '700',
-    letterSpacing: 1.1,
-    marginTop: 5,
-  },
-  categoryOption: {
-    position: 'absolute',
-    minWidth: 82,
-    height: 42,
-    borderRadius: 22,
-    backgroundColor: '#151C29',
-    borderWidth: 1,
-    borderColor: '#283345',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-  },
-  categoryTop: {
-    top: 8,
-    alignSelf: 'center',
-  },
-  categoryBottomLeft: {
-    bottom: 20,
-    left: 3,
-  },
-  categoryBottomRight: {
-    bottom: 20,
-    right: 3,
-  },
-  categoryOptionActive: {
-    backgroundColor: '#25405A',
-    borderColor: '#5D9CCC',
-    shadowColor: '#4AA8E8',
-    shadowOpacity: 0.28,
-    shadowRadius: 12,
-    elevation: 5,
-  },
-  categoryLabel: {
-    color: '#AAB4C5',
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  categoryLabelActive: {
-    color: '#FFFFFF',
-  },
   detailHeading: {
-    marginTop: 24,
+    marginTop: 21,
     marginHorizontal: 24,
-    marginBottom: 12,
+    marginBottom: 13,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
   cardTypeBadge: {
-    borderRadius: 12,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    backgroundColor: '#172434',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#FFF0E9',
+    borderWidth: 1,
+    borderColor: '#F6D4C5',
   },
   cardTypeBadgeText: {
-    color: '#87C6E9',
-    fontSize: 9,
+    color: '#C63A13',
+    fontSize: 10,
     fontWeight: '700',
     letterSpacing: 1,
   },
   balancePanel: {
     marginHorizontal: 20,
-    marginBottom: 12,
-    padding: 18,
-    backgroundColor: '#111722',
+    marginBottom: 14,
+    padding: 19,
+    backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#1E2735',
-    borderRadius: 20,
+    borderColor: '#F0E7E2',
+    borderRadius: 22,
+    shadowColor: '#7A2E0E',
+    shadowOffset: { width: 0, height: 7 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 3,
   },
   balancePanelTop: {
     flexDirection: 'row',
@@ -1453,69 +1999,100 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   mutedLabel: {
-    color: '#758198',
+    color: '#858585',
     fontSize: 9,
     fontWeight: '700',
-    letterSpacing: 1.3,
+    letterSpacing: 1.2,
+  },
+  balanceValueBlock: {
+    flex: 1,
   },
   balanceValue: {
-    color: '#F5F7FB',
-    fontSize: 23,
-    fontWeight: '600',
-    letterSpacing: -0.5,
-    marginTop: 5,
+    color: '#1C1C1E',
+    fontSize: 25,
+    fontWeight: '700',
+    letterSpacing: -0.8,
+    marginTop: 7,
   },
   outstandingBlock: {
     alignItems: 'flex-end',
   },
   outstandingValue: {
-    color: '#E9B97B',
+    color: '#C63A13',
     fontSize: 15,
     fontWeight: '600',
     marginTop: 6,
   },
   creditTrack: {
-    height: 5,
-    backgroundColor: '#263040',
-    borderRadius: 3,
+    height: 7,
+    backgroundColor: '#F1EAE6',
+    borderRadius: 4,
     overflow: 'hidden',
-    marginTop: 16,
+    marginTop: 13,
   },
   creditFill: {
     height: '100%',
-    backgroundColor: '#D9A56D',
-    borderRadius: 3,
+    backgroundColor: '#E8420F',
+    borderRadius: 4,
   },
   creditFootnote: {
-    color: '#7F8A9E',
+    color: '#858585',
     fontSize: 10,
-    marginTop: 8,
+    marginTop: 10,
+  },
+  creditFootnoteStrong: {
+    color: '#555555',
+    fontWeight: '700',
   },
   balanceIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 13,
-    backgroundColor: '#162B2A',
+    width: 44,
+    height: 44,
+    borderRadius: 15,
+    backgroundColor: '#FFF0E9',
+    borderWidth: 1,
+    borderColor: '#F8DDCF',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  overviewDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#EEE7E3',
+    marginTop: 17,
+    marginBottom: 14,
   },
   spendingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginTop: 18,
   },
   spendingAmount: {
-    color: '#D6DCEA',
-    fontSize: 12,
-    fontWeight: '600',
+    color: '#242424',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  spendingHint: {
+    color: '#999999',
+    fontSize: 10,
+    marginTop: 4,
   },
   spendingFill: {
     height: '100%',
-    backgroundColor: '#5DCBA3',
-    borderRadius: 3,
+    backgroundColor: '#E8420F',
+    borderRadius: 4,
+  },
+  progressLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  progressCaption: {
+    color: '#A0A0A0',
+    fontSize: 8,
+    fontWeight: '700',
+    letterSpacing: 1,
   },
   transactionsHeader: {
+    flexShrink: 0,
     marginTop: 18,
     marginHorizontal: 24,
     marginBottom: 8,
@@ -1524,28 +2101,91 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   viewAll: {
-    color: '#75B9DE',
+    color: '#D54517',
     fontSize: 12,
     fontWeight: '600',
     paddingBottom: 2,
   },
   transactionsList: {
+    flex: 1,
+    minHeight: 0,
     marginHorizontal: 20,
+    overflow: 'hidden',
+  },
+  transactionsScroll: {
+    flex: 1,
+  },
+  transactionsScrollContent: {
+    flexGrow: 1,
+    minHeight: 207,
+  },
+  emptyTransactions: {
+    minHeight: 207,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyTransactionsTitle: {
+    color: '#858585',
+    fontSize: 13,
+  },
+  lockedTransactions: {
+    flex: 1,
+    minHeight: 207,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+  },
+  lockedTransactionsIcon: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 3,
+    borderRadius: 21,
+    backgroundColor: '#F2F2F2',
+  },
+  lockedTransactionsHint: {
+    color: '#A0A0A5',
+    fontSize: 11,
+  },
+  accountTransactionGroup: {
+    marginBottom: 10,
+  },
+  accountTransactionHeading: {
+    minHeight: 34,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#EAEAEA',
+  },
+  accountTransactionDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  accountTransactionTitle: {
+    flex: 1,
+    color: '#77777E',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
   },
   transactionRow: {
-    minHeight: 69,
+    minHeight: 60,
     flexDirection: 'row',
     alignItems: 'center',
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#1B2330',
+    borderBottomColor: '#EAEAEA',
   },
   transactionIcon: {
-    width: 42,
-    height: 42,
+    width: 38,
+    height: 38,
     borderRadius: 15,
-    backgroundColor: '#171E2A',
+    backgroundColor: '#F2F2F2',
     borderWidth: 1,
-    borderColor: '#252F3E',
+    borderColor: '#E5E5E5',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1554,21 +2194,21 @@ const styles = StyleSheet.create({
     marginLeft: 12,
   },
   transactionName: {
-    color: '#E9EDF5',
+    color: '#242424',
     fontSize: 13,
     fontWeight: '500',
   },
   transactionDate: {
-    color: '#788398',
+    color: '#858585',
     fontSize: 10,
     marginTop: 4,
   },
   transactionAmount: {
-    color: '#F1F3F7',
+    color: '#202124',
     fontSize: 12,
     fontWeight: '600',
   },
   positiveAmount: {
-    color: '#66D2A8',
+    color: '#27805F',
   },
 });

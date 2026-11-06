@@ -11,6 +11,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Feather } from '@expo/vector-icons';
 
 import theme from '../theme';
+import { HOME_HEADER_GRADIENT } from '../theme/gradients';
 import CardStack from './CardStack';
 import { formatWalletCurrency, getTopCards } from '../context/WalletCardsContext';
 import { WalletCard } from '../data/walletCards';
@@ -123,7 +124,7 @@ export default function BalanceHeader({
       ]}
     >
       <LinearGradient
-        colors={['#7A0A00', '#E8420F', '#F5873F']}
+        colors={HOME_HEADER_GRADIENT}
         start={{ x: 0.5, y: 0 }}
         end={{ x: 0.5, y: 1 }}
         style={styles.headerGradient}

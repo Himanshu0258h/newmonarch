@@ -1,3 +1,5 @@
+import type { TransactionAttachment } from './transactions';
+
 export type WalletCategory = 'transit' | 'credit' | 'debit';
 
 export type WalletTransaction = {
@@ -6,6 +8,13 @@ export type WalletTransaction = {
   detail: string;
   amount: number;
   positive?: boolean;
+  category?: string;
+  transferType?: 'self' | 'person';
+  type?: 'income' | 'expense';
+  timestamp?: string;
+  note?: string;
+  attachment?: TransactionAttachment;
+  isMock?: boolean;
   icon:
     | 'cafe'
     | 'basket'
@@ -17,7 +26,8 @@ export type WalletTransaction = {
     | 'bag'
     | 'restaurant'
     | 'medkit'
-    | 'bus';
+    | 'bus'
+    | 'swap-horizontal';
 };
 
 export type WalletCard = {
@@ -37,8 +47,60 @@ export type WalletCard = {
   monthlySpend: number;
   creditLimit?: number;
   outstanding?: number;
+  isDefault?: boolean;
   transactions: WalletTransaction[];
 };
+
+export function getWalletCardDisplayName(card: Pick<WalletCard, 'displayName' | 'bank'>) {
+  const name = card.displayName?.trim() || card.bank.trim();
+  return name.replace(/\s+(?:debit|credit)\s+card$/i, '').trim();
+}
+
+export function getWalletCardTypeLabel(card: Pick<WalletCard, 'type'>) {
+  return card.type.trim().toUpperCase() === 'DEBIT'
+    ? 'BANK ACCOUNT'
+    : `${card.type.trim().toUpperCase()} CARD`;
+}
+
+export const MOCK_CASH_TRANSACTIONS: WalletTransaction[] = [
+  {
+    id: 'cash-mock-tea',
+    merchant: 'Tea Stall',
+    detail: 'Today · 09:00',
+    amount: 40,
+    icon: 'cafe',
+    category: 'Food',
+    isMock: true,
+  },
+  {
+    id: 'cash-mock-auto',
+    merchant: 'Auto Rickshaw',
+    detail: 'Yesterday · 18:20',
+    amount: 120,
+    icon: 'car',
+    category: 'Transport',
+    isMock: true,
+  },
+  {
+    id: 'cash-mock-groceries',
+    merchant: 'Groceries',
+    detail: 'Yesterday · 12:15',
+    amount: 350,
+    icon: 'basket',
+    category: 'Groceries',
+    isMock: true,
+  },
+  {
+    id: 'cash-mock-atm',
+    merchant: 'ATM withdrawal',
+    detail: 'Today · 08:30',
+    amount: 2000,
+    positive: true,
+    icon: 'bag',
+    category: 'Income',
+    isMock: true,
+  },
+];
 
 export const walletCards: WalletCard[] = [
   {
@@ -55,12 +117,12 @@ export const walletCards: WalletCard[] = [
     colors: ['#386B59', '#21483F', '#142E32'],
     balance: 0,
     monthlySpend: 0,
-    transactions: [],
+    transactions: MOCK_CASH_TRANSACTIONS,
   },
   {
     id: 'hdfc-debit',
     bank: 'HDFC BANK',
-    displayName: 'HDFC Debit Card',
+    displayName: 'HDFC BANK',
     holder: 'HIMANSHU SHARMA',
     type: 'DEBIT',
     category: 'debit',
@@ -82,7 +144,7 @@ export const walletCards: WalletCard[] = [
   {
     id: 'sbi-debit',
     bank: 'STATE BANK OF INDIA',
-    displayName: 'SBI Debit Card',
+    displayName: 'STATE BANK OF INDIA',
     holder: 'HIMANSHU SHARMA',
     type: 'DEBIT',
     category: 'debit',
@@ -104,7 +166,7 @@ export const walletCards: WalletCard[] = [
   {
     id: 'icici-credit',
     bank: 'ICICI BANK',
-    displayName: 'ICICI Credit Card',
+    displayName: 'ICICI BANK',
     holder: 'HIMANSHU SHARMA',
     type: 'CREDIT',
     category: 'credit',
@@ -128,7 +190,7 @@ export const walletCards: WalletCard[] = [
   {
     id: 'axis-debit',
     bank: 'AXIS BANK',
-    displayName: 'Axis Debit Card',
+    displayName: 'AXIS BANK',
     holder: 'HIMANSHU SHARMA',
     type: 'DEBIT',
     category: 'debit',

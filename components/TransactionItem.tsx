@@ -1,37 +1,88 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Animated, StyleSheet, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import Svg, { Circle, Path } from 'react-native-svg';
 
 import { Transaction } from '../data/transactions';
-import theme from '../theme';
+import { formatWalletCurrency } from '../context/WalletCardsContext';
+import { getTransactionMode } from '../utils/transactionCategories';
 
 type TransactionItemProps = {
   item: Transaction;
+  newlyAdded?: boolean;
 };
 
-export default function TransactionItem({ item }: TransactionItemProps) {
-  const sign = item.isPositive ? '' : '-';
-  const fractionDigits = item.type === 'stripe' ? 0 : 2;
-  const amountText = `${sign}$${item.amount.toLocaleString(undefined, {
-    minimumFractionDigits: fractionDigits,
-    maximumFractionDigits: fractionDigits,
-  })}`;
+const CATEGORY_FEATHER: Record<string, keyof typeof Feather.glyphMap> = {
+  'Food and dining': 'coffee',
+  Groceries: 'shopping-bag',
+  Transport: 'navigation',
+  Fuel: 'truck',
+  Shopping: 'shopping-bag',
+  'Bills and utilities': 'file-text',
+  Rent: 'home',
+  Entertainment: 'play',
+  Health: 'heart',
+  Education: 'book',
+  Travel: 'map',
+  Subscriptions: 'repeat',
+  Transfers: 'repeat',
+  Salary: 'briefcase',
+  Freelance: 'monitor',
+  Business: 'briefcase',
+  Investments: 'trending-up',
+  Refund: 'corner-down-left',
+  Gift: 'gift',
+  Interest: 'dollar-sign',
+};
+
+function TransactionItem({ item, newlyAdded = false }: TransactionItemProps) {
+  const entrance = React.useRef(new Animated.Value(newlyAdded ? 0 : 1)).current;
+  React.useEffect(() => {
+    if (!newlyAdded) return;
+    entrance.setValue(0);
+    Animated.timing(entrance, {
+      toValue: 1,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  }, [entrance, newlyAdded]);
+
+  const mode = getTransactionMode(item);
+  const amountText = `${mode === 'expense' ? '−' : ''}${formatWalletCurrency(item.amount, 'INR')}`;
+  const categoryIcon = item.category ? CATEGORY_FEATHER[item.category] : undefined;
 
   return (
-    <View style={styles.row}>
+    <Animated.View
+      style={[
+        styles.row,
+        {
+          opacity: entrance,
+          transform: [
+            {
+              translateY: entrance.interpolate({
+                inputRange: [0, 1],
+                outputRange: [12, 0],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
       <View style={styles.iconWrap}>
-        {item.type === 'adobe' && (
+        {categoryIcon ? (
+          <Feather name={categoryIcon} size={19} color="#6D6D73" />
+        ) : item.type === 'adobe' ? (
           <Svg width={24} height={24} viewBox="0 0 24 24" accessibilityLabel="Adobe Creative Cloud">
             <Circle cx="12" cy="12" r="8.5" fill="none" stroke="#E1251B" strokeWidth="3.5" />
             <Path d="M8.2 15.4 12 8.6l3.8 6.8" fill="none" stroke="#E1251B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
           </Svg>
-        )}
-        {item.type === 'stripe' && <Text style={styles.stripeMark}>stripe</Text>}
-        {item.type === 'briefcase' && (
+        ) : item.type === 'stripe' ? (
+          <Text style={styles.stripeMark}>stripe</Text>
+        ) : item.type === 'briefcase' ? (
           <Feather name="briefcase" size={18} color="#6D6D73" style={styles.briefcaseIcon} />
+        ) : (
+          <Text style={styles.otherMark}>◌</Text>
         )}
-        {item.type === 'other' && <Text style={styles.otherMark}>◌</Text>}
       </View>
 
       <View style={styles.metaWrap}>
@@ -41,8 +92,8 @@ export default function TransactionItem({ item }: TransactionItemProps) {
         <Text style={styles.subtitle}>{item.subtitle}</Text>
       </View>
 
-      <Text style={styles.amount}>{amountText}</Text>
-    </View>
+      <Text style={styles.amount} numberOfLines={1} adjustsFontSizeToFit>{amountText}</Text>
+    </Animated.View>
   );
 }
 
@@ -100,9 +151,11 @@ const styles = StyleSheet.create({
   amount: {
     fontSize: 15,
     fontWeight: '500',
-    width: 94,
+    width: 110,
     textAlign: 'right',
     letterSpacing: -0.3,
     color: '#111111',
   },
 });
+
+export default React.memo(TransactionItem);

@@ -5,14 +5,30 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "platforms": ["ios", "android"],
+    "android": {
+      "softwareKeyboardLayoutMode": "resize"
+    },
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
     "plugins": [
       [
         "expo-local-authentication",
         {
           "faceIDPermission": "Allow Monarch Finance to verify your identity before showing card balances."
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker",
+      [
+        "expo-navigation-bar",
+        {
+          "enforceContrast": false,
+          "style": "light"
+        }
+      ],
+      "expo-sharing"
     ]
   }
 }
